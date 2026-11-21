@@ -117,6 +117,8 @@ def create_app(config_class=Config):
     app.register_blueprint(report_bp, url_prefix='/api/report')
     from .api.cohort import cohort_bp
     app.register_blueprint(cohort_bp, url_prefix='/api/cohort')
+    from .api.cohort_discussion import discussion_bp
+    app.register_blueprint(discussion_bp, url_prefix='/api/cohort')
     if Config.CHATGPT_PLAN_MODE:
         from .api.chatgpt_plan import chatgpt_plan_bp
         from .api.chatgpt_proxy import chatgpt_proxy_bp
