@@ -2,11 +2,18 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.config import Config
 from app.utils.openai_chat_compat import (
     create_chat_completion,
     extract_chat_completion_text,
     is_gpt5_family,
 )
+
+
+@pytest.fixture(autouse=True)
+def ordinary_api_mode(monkeypatch):
+    """Preserve the original provider request contract under plan-mode .env files."""
+    monkeypatch.setattr(Config, "CHATGPT_PLAN_MODE", False)
 
 
 class CompletionRecorder:

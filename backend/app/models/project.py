@@ -42,6 +42,8 @@ class Project:
     
     # 图谱信息（接口2完成后填充）
     graph_id: Optional[str] = None
+    # Existing records without this field used Zep Cloud.
+    memory_backend: str = "zep"
     graph_build_task_id: Optional[str] = None
     zep_batch_id: Optional[str] = None
     zep_batch_operation_id: Optional[str] = None
@@ -53,6 +55,22 @@ class Project:
     
     # 错误信息
     error: Optional[str] = None
+
+    def uses_active_memory_backend(self) -> bool:
+        return self.memory_backend == Config.MEMORY_BACKEND
+
+    def memory_backend_conflict(self) -> str:
+        if self.memory_backend not in ('zep', 'local'):
+            return (
+                f"Project {self.project_id} has an unknown graph-memory backend; "
+                "its graph cannot be accessed or deleted safely."
+            )
+        return (
+            f"Project {self.project_id} uses {self.memory_backend} graph memory; "
+            f"MEMORY_BACKEND is {Config.MEMORY_BACKEND}. Restore "
+            f"MEMORY_BACKEND={self.memory_backend} to access or delete its graph. "
+            "Changing the backend does not migrate graphs."
+        )
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -67,6 +85,7 @@ class Project:
             "ontology": self.ontology,
             "analysis_summary": self.analysis_summary,
             "graph_id": self.graph_id,
+            "memory_backend": self.memory_backend,
             "graph_build_task_id": self.graph_build_task_id,
             "zep_batch_id": self.zep_batch_id,
             "zep_batch_operation_id": self.zep_batch_operation_id,
@@ -94,6 +113,11 @@ class Project:
             ontology=data.get('ontology'),
             analysis_summary=data.get('analysis_summary'),
             graph_id=data.get('graph_id'),
+            memory_backend=(
+                data.get('memory_backend', 'zep')
+                if data.get('memory_backend', 'zep') in ('zep', 'local')
+                else 'unknown'
+            ),
             graph_build_task_id=data.get('graph_build_task_id'),
             zep_batch_id=data.get('zep_batch_id'),
             zep_batch_operation_id=data.get('zep_batch_operation_id'),
@@ -156,7 +180,8 @@ class ProjectManager:
             name=name,
             status=ProjectStatus.CREATED,
             created_at=now,
-            updated_at=now
+            updated_at=now,
+            memory_backend=Config.MEMORY_BACKEND,
         )
         
         # 创建项目目录结构
@@ -226,7 +251,7 @@ class ProjectManager:
 
     @classmethod
     def find_projects_by_graph_id(cls, graph_id: str) -> List[Project]:
-        """Return every persisted project that references a Cloud graph."""
+        """Return every persisted project that references a graph ID."""
 
         return [
             project

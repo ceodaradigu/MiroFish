@@ -16,6 +16,7 @@ not configured for a hosted service or for Tallerna's production server.
    `npm ci --ignore-scripts`, `npm ci --prefix frontend --ignore-scripts`,
    and `cd backend; uv sync --frozen`.
 2. In the ignored root `.env`, set `CHATGPT_PLAN_MODE=1`,
+   `MEMORY_BACKEND=local`,
    `FLASK_HOST=127.0.0.1`, `FLASK_PORT=5001`, and `FLASK_DEBUG=False`.
    `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL_NAME` are managed in memory by
    this mode and do not need values in `.env`.
@@ -25,9 +26,9 @@ not configured for a hosted service or for Tallerna's production server.
 4. Select **Continue with ChatGPT**. Finish the sign-in and consent directly
    on OpenAI's page. Return to MiroFish, refresh the status, and select a model
    listed for the account.
-5. Configure `ZEP_API_KEY` separately in the ignored `.env` before starting a
-   simulation. The ChatGPT plan does not provide Zep Cloud. Review any Zep
-   terms or limits yourself before enabling that account.
+5. The local graph is stored in the ignored `backend/uploads/local_graph.db`.
+   `ZEP_API_KEY` is not needed in local mode. The original Zep Cloud route is
+   still available by selecting `MEMORY_BACKEND=zep` and configuring its key.
 
 The authorization and refresh tokens live only in the backend process's
 memory. Restarting the backend requires reconnecting. An ignored local
@@ -48,8 +49,14 @@ warning. Results may differ from the original MiroFish provider path.
 The selected model must appear in the signed-in account's visible model list.
 Model availability and usage limits depend on OpenAI's current eligibility
 rules; see its [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations.md).
+The local graph uses the selected model to extract entities and relationships
+from the scenario; those text fragments therefore go to OpenAI under the
+account's plan. Search starts with local BM25 keyword ranking. It does not
+replicate Zep's temporal conflict handling or semantic ranking, and the local
+SQLite file is not encrypted. See [local memory details](LOCAL-MEMORY.md).
+
 This code has automated, credential-free tests. It has not yet completed a
-real OAuth consent, Zep connection, or full simulation. No prediction for
+real OAuth consent or full simulation. No prediction for
 Tallerna should be reported until those steps actually run. Even then,
 simulated agents are a source of hypotheses, not real customer evidence.
 

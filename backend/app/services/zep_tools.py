@@ -24,6 +24,7 @@ from ..utils.zep import (
     get_zep_client,
     normalize_zep_search_limit,
     normalize_zep_search_query,
+    resolve_memory_api_key,
 )
 
 logger = get_logger('mirofish.zep_tools')
@@ -428,8 +429,8 @@ class ZepToolsService:
     RETRY_DELAY = 2.0
     
     def __init__(self, api_key: Optional[str] = None, llm_client: Optional[LLMClient] = None):
-        self.api_key = api_key or Config.ZEP_API_KEY
-        if not self.api_key:
+        self.api_key = resolve_memory_api_key(api_key)
+        if not self.api_key and not Config.is_local_memory():
             raise ValueError("ZEP_API_KEY 未配置")
         
         self.client = get_zep_client(self.api_key)

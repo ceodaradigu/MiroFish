@@ -49,11 +49,23 @@ class Config:
     
     # Zep配置
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
+
+    # Optional local graph memory. The default preserves the upstream Zep path.
+    MEMORY_BACKEND = os.environ.get('MEMORY_BACKEND', 'zep').strip().lower()
     
     # 文件上传配置
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB
     UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), '../uploads')
     ALLOWED_EXTENSIONS = {'pdf', 'md', 'txt', 'markdown'}
+    LOCAL_GRAPH_DB = os.environ.get('LOCAL_GRAPH_DB') or os.path.join(UPLOAD_FOLDER, 'local_graph.db')
+    MEMORY_EMBEDDINGS = os.environ.get('MEMORY_EMBEDDINGS', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+    MEMORY_EMBED_MODEL = os.environ.get('MEMORY_EMBED_MODEL', 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
+    MEMORY_EMBED_CACHE_DIR = os.environ.get('MEMORY_EMBED_CACHE_DIR') or os.path.join(UPLOAD_FOLDER, 'models')
+    MEMORY_EXTRACT_ACTIVITY = os.environ.get('MEMORY_EXTRACT_ACTIVITY', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+    LOCAL_GRAPH_EXTRACT_WORKERS = int(os.environ.get('LOCAL_GRAPH_EXTRACT_WORKERS', '1'))
+    LOCAL_GRAPH_MAX_EPISODE_CHARS = int(os.environ.get('LOCAL_GRAPH_MAX_EPISODE_CHARS', '6000'))
+    MEMORY_ENTITY_SIMILARITY = float(os.environ.get('MEMORY_ENTITY_SIMILARITY', '0.9'))
+    MEMORY_MIN_SIMILARITY = float(os.environ.get('MEMORY_MIN_SIMILARITY', '0.3'))
     
     # 文本处理配置
     DEFAULT_CHUNK_SIZE = 500  # 默认切块大小
@@ -82,6 +94,14 @@ class Config:
     def zep_is_configured(cls) -> bool:
         """A configured key is present; this does not verify the Zep account."""
         return bool(cls.ZEP_API_KEY and cls.ZEP_API_KEY != 'your_zep_api_key_here')
+
+    @classmethod
+    def is_local_memory(cls) -> bool:
+        return cls.MEMORY_BACKEND == 'local'
+
+    @classmethod
+    def memory_backend_configured(cls) -> bool:
+        return cls.is_local_memory() or (cls.MEMORY_BACKEND == 'zep' and cls.zep_is_configured())
     
     @classmethod
     def validate(cls) -> list[str]:
@@ -89,7 +109,9 @@ class Config:
         errors: list[str] = []
         if not cls.LLM_API_KEY:
             errors.append("LLM_API_KEY 未配置")
-        if not cls.zep_is_configured() and not cls.CHATGPT_PLAN_MODE:
+        if cls.MEMORY_BACKEND not in ('zep', 'local'):
+            errors.append('MEMORY_BACKEND must be zep or local')
+        if not cls.memory_backend_configured() and not cls.CHATGPT_PLAN_MODE:
             errors.append("ZEP_API_KEY 未配置")
         if cls.CHATGPT_PLAN_MODE:
             if os.environ.get('FLASK_HOST', '127.0.0.1') != '127.0.0.1':
@@ -98,7 +120,7 @@ class Config:
                 errors.append('ChatGPT plan mode requires FLASK_PORT=5001')
             if cls.DEBUG:
                 errors.append('ChatGPT plan mode requires FLASK_DEBUG=False')
-        if os.environ.get("ZEP_API_URL"):
+        if cls.MEMORY_BACKEND == 'zep' and os.environ.get("ZEP_API_URL"):
             errors.append("ZEP_API_URL 不受支持；MiroFish 仅连接 Zep Cloud")
         if cls.DEBUG:
             import warnings

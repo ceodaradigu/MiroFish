@@ -26,6 +26,7 @@ from ..utils.zep import (
     call_zep_read_with_retry,
     get_zep_client,
     is_retryable_zep_error,
+    resolve_memory_api_key,
 )
 from .text_processor import TextProcessor
 from ..utils.locale import t, get_locale, set_locale
@@ -65,8 +66,8 @@ class GraphBuilderService:
     """
     
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or Config.ZEP_API_KEY
-        if not self.api_key:
+        self.api_key = resolve_memory_api_key(api_key)
+        if not self.api_key and not Config.is_local_memory():
             raise ValueError("ZEP_API_KEY 未配置")
         
         self.client = get_zep_client(self.api_key)
@@ -202,6 +203,7 @@ class GraphBuilderService:
             )
             
             graph_info = self._get_graph_info(graph_id)
+            self.validate_local_graph_extraction(graph_id, graph_info)
             
             # 完成
             self.task_manager.complete_task(task_id, {
@@ -796,6 +798,19 @@ class GraphBuilderService:
             edge_count=len(edges),
             entity_types=list(entity_types)
         )
+
+    def validate_local_graph_extraction(
+        self, graph_id: str, graph_info: GraphInfo | None = None
+    ) -> None:
+        """Fail a local build that produced no usable typed entities."""
+
+        if not Config.is_local_memory():
+            return
+        info = graph_info or self._get_graph_info(graph_id)
+        if not info.entity_types:
+            raise RuntimeError(
+                f"Local graph {graph_id} has no typed entities after batch extraction"
+            )
     
     def get_graph_data(self, graph_id: str) -> Dict[str, Any]:
         """

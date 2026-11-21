@@ -15,6 +15,11 @@ from app.services.simulation_runner import (
 )
 
 
+@pytest.fixture(autouse=True)
+def zep_memory_backend(monkeypatch):
+    monkeypatch.setattr(simulation_api.Config, "MEMORY_BACKEND", "zep")
+
+
 def test_manual_stop_surfaces_graph_ingestion_failure(monkeypatch):
     state = SimulationRunState(
         simulation_id="sim-1",
@@ -213,6 +218,17 @@ def test_force_restart_does_not_continue_while_old_ingestion_is_pending(monkeypa
         status=SimulationStatus.STOPPING,
     )
     cleanup_called = []
+    project = SimpleNamespace(
+        project_id="proj-1",
+        graph_id="graph-1",
+        memory_backend="zep",
+        uses_active_memory_backend=lambda: True,
+    )
+    monkeypatch.setattr(
+        simulation_api.ProjectManager,
+        "get_project",
+        classmethod(lambda _cls, _project_id: project),
+    )
     monkeypatch.setattr(
         simulation_api,
         "SimulationManager",

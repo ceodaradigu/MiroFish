@@ -1,9 +1,19 @@
 import io
 
+import pytest
+
 from app import create_app
 from app.api import graph as graph_api
+from app.config import Config
 from app.models.project import ProjectManager, ProjectStatus
 from app.utils.llm_client import LLMResponseError
+
+
+@pytest.fixture(autouse=True)
+def ordinary_api_mode(monkeypatch):
+    """Exercise provider errors without the local plan sign-in gate."""
+    monkeypatch.setattr(Config, "CHATGPT_PLAN_MODE", False)
+    monkeypatch.setattr(Config, "MEMORY_BACKEND", "zep")
 
 
 def _post_ontology(client):

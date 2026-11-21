@@ -37,6 +37,12 @@ class GraphInUseError(RuntimeError):
     pass
 
 
+def _backend_conflict_response(project):
+    if project.uses_active_memory_backend():
+        return None
+    return jsonify({"success": False, "error": project.memory_backend_conflict()}), 409
+
+
 def _active_graph_consumers(graph_id: str) -> list[str]:
     active = {
         f"report:{reader_id}"
@@ -73,12 +79,12 @@ def _active_graph_consumers(graph_id: str) -> list[str]:
     return sorted(active)
 
 
-def _delete_cloud_graph_if_present(graph_id: str | None) -> None:
-    """Delete a referenced Cloud graph without retrying the mutation."""
+def _delete_graph_if_present(graph_id: str | None) -> None:
+    """Delete a referenced graph from the project's active backend."""
 
     if not graph_id:
         return
-    # Keep the consumer check and Cloud mutation in one critical section. The
+    # Keep the consumer check and graph mutation in one critical section. The
     # callers that also clear local references hold this re-entrant lock around
     # both operations.
     with graph_lifecycle_lock(graph_id):
@@ -91,7 +97,7 @@ def _delete_cloud_graph_if_present(graph_id: str | None) -> None:
         try:
             GraphBuilderService(api_key=Config.ZEP_API_KEY).delete_graph(graph_id)
         except NotFoundError:
-            logger.info("Zep Cloud graph already absent: %s", graph_id)
+            logger.info("Graph already absent from %s memory: %s", Config.MEMORY_BACKEND, graph_id)
 
 
 def _clear_project_graph_reference(project) -> None:
@@ -179,6 +185,10 @@ def _delete_project_impl(project_id: str):
             "success": False,
             "error": t('api.projectNotFound', id=project_id)
         }), 404
+    if project.graph_id:
+        conflict = _backend_conflict_response(project)
+        if conflict:
+            return conflict
     if _project_has_active_build(project):
         return jsonify({
             "success": False,
@@ -191,7 +201,7 @@ def _delete_project_impl(project_id: str):
     )
     with graph_guard:
         try:
-            _delete_cloud_graph_if_present(graph_id)
+            _delete_graph_if_present(graph_id)
         except GraphInUseError as error:
             return jsonify({"success": False, "error": str(error)}), 409
         # The local reference remains protected until it is removed, so a new
@@ -228,6 +238,10 @@ def _reset_project_impl(project_id: str):
             "error": t('api.projectNotFound', id=project_id)
         }), 404
 
+    conflict = _backend_conflict_response(project)
+    if conflict:
+        return conflict
+
     if _project_has_active_build(project):
         return jsonify({
             "success": False,
@@ -240,7 +254,7 @@ def _reset_project_impl(project_id: str):
     )
     with graph_guard:
         try:
-            _delete_cloud_graph_if_present(graph_id)
+            _delete_graph_if_present(graph_id)
         except GraphInUseError as error:
             return jsonify({"success": False, "error": str(error)}), 409
 
@@ -484,7 +498,7 @@ def _build_graph_impl():
         
         # 检查配置
         errors = []
-        if not Config.ZEP_API_KEY:
+        if not Config.memory_backend_configured():
             errors.append(t('api.zepApiKeyMissing'))
         if errors:
             logger.error(f"配置错误: {errors}")
@@ -511,6 +525,10 @@ def _build_graph_impl():
                 "success": False,
                 "error": t('api.projectNotFound', id=project_id)
             }), 404
+
+        conflict = _backend_conflict_response(project)
+        if conflict:
+            return conflict
 
         # 检查项目状态
         force = data.get('force', False)  # 强制重新构建
@@ -618,7 +636,7 @@ def _build_graph_impl():
                 "error": t('api.ontologyNotFound')
             }), 400
 
-        # Only mutate Cloud state after the complete rebuild request validates.
+        # Only mutate graph state after the complete rebuild request validates.
         if project.status == ProjectStatus.FAILED or (
             force and project.status == ProjectStatus.GRAPH_COMPLETED
         ):
@@ -629,7 +647,7 @@ def _build_graph_impl():
                 else nullcontext()
             )
             with graph_guard:
-                _delete_cloud_graph_if_present(graph_id_to_delete)
+                _delete_graph_if_present(graph_id_to_delete)
                 project.status = ProjectStatus.ONTOLOGY_GENERATED
                 _clear_project_graph_reference(project)
                 ProjectManager.save_project(project)
@@ -763,6 +781,7 @@ def _build_graph_impl():
                     )
                 
                 builder._wait_for_batch(submission, wait_progress_callback)
+                builder.validate_local_graph_extraction(graph_id)
                 
                 # 获取图谱数据
                 task_manager.update_task(
@@ -882,11 +901,19 @@ def get_graph_data(graph_id: str):
     获取图谱数据（节点和边）
     """
     try:
-        if not Config.ZEP_API_KEY:
+        if not Config.memory_backend_configured():
             return jsonify({
                 "success": False,
                 "error": t('api.zepApiKeyMissing')
             }), 500
+
+        projects = ProjectManager.find_projects_by_graph_id(graph_id)
+        if not projects:
+            return jsonify({"success": False, "error": "No local project references this graph"}), 404
+        for project in projects:
+            conflict = _backend_conflict_response(project)
+            if conflict:
+                return conflict
         
         builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
         graph_data = builder.get_graph_data(graph_id)
@@ -910,7 +937,7 @@ def delete_graph(graph_id: str):
     删除Zep图谱
     """
     try:
-        if not Config.ZEP_API_KEY:
+        if not Config.memory_backend_configured():
             return jsonify({
                 "success": False,
                 "error": t('api.zepApiKeyMissing')
@@ -922,6 +949,10 @@ def delete_graph(graph_id: str):
                 "success": False,
                 "error": "No local project references this graph"
             }), 404
+        for project in projects:
+            conflict = _backend_conflict_response(project)
+            if conflict:
+                return conflict
         project_ids = sorted({project.project_id for project in projects})
         with ExitStack() as stack:
             for project_id in project_ids:
@@ -929,15 +960,21 @@ def delete_graph(graph_id: str):
             stack.enter_context(graph_lifecycle_lock(graph_id))
 
             # Re-read under all owning project locks so a concurrent build
-            # claim cannot appear between validation and Cloud deletion.
+            # claim cannot appear between validation and graph deletion.
             projects = ProjectManager.find_projects_by_graph_id(graph_id)
+            if not projects:
+                return jsonify({"success": False, "error": "No local project references this graph"}), 404
+            for project in projects:
+                conflict = _backend_conflict_response(project)
+                if conflict:
+                    return conflict
             if any(_project_has_active_build(project) for project in projects):
                 return jsonify({
                     "success": False,
                     "error": t('api.graphBuilding')
                 }), 409
 
-            _delete_cloud_graph_if_present(graph_id)
+            _delete_graph_if_present(graph_id)
 
             for project in projects:
                 _clear_project_graph_reference(project)

@@ -68,8 +68,8 @@ def create_app(config_class=Config):
             if not request.path.startswith(('/api/graph/', '/api/simulation/', '/api/report/')):
                 return
             from .services.chatgpt_plan_auth import auth
-            if not (auth.status()['plan_usage_enabled'] and Config.zep_is_configured() and Config.LLM_MODEL_NAME):
-                abort(503, 'Connect ChatGPT, select a model, and configure Zep Cloud first.')
+            if not (auth.status()['plan_usage_enabled'] and Config.memory_backend_configured() and Config.LLM_MODEL_NAME):
+                abort(503, 'Connect ChatGPT, select a model, and configure graph memory first.')
     
     # 注册模拟进程清理函数（确保服务器关闭时终止所有模拟进程）
     from .services.simulation_runner import SimulationRunner

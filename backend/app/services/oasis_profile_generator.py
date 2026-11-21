@@ -25,6 +25,7 @@ from ..utils.zep import (
     get_zep_client,
     is_retryable_zep_error,
     normalize_zep_search_query,
+    resolve_memory_api_key,
 )
 from .zep_entity_reader import EntityNode, ZepEntityReader
 
@@ -261,11 +262,11 @@ class OasisProfileGenerator:
         )
         
         # Zep客户端用于检索丰富上下文
-        self.zep_api_key = zep_api_key or Config.ZEP_API_KEY
+        self.zep_api_key = resolve_memory_api_key(zep_api_key)
         self.zep_client = None
         self.graph_id = graph_id
         
-        if self.zep_api_key:
+        if self.zep_api_key or Config.is_local_memory():
             try:
                 self.zep_client = get_zep_client(self.zep_api_key)
             except Exception as e:

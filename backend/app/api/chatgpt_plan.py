@@ -36,6 +36,8 @@ def status():
         'planMode': True,
         'connected': state['connected'],
         'planUsageEnabled': state['plan_usage_enabled'],
+        'memoryBackend': Config.MEMORY_BACKEND,
+        'memoryReady': Config.memory_backend_configured(),
         'zepConfigured': Config.zep_is_configured(),
         'selectedModel': Config.LLM_MODEL_NAME if state['plan_usage_enabled'] else '',
     })

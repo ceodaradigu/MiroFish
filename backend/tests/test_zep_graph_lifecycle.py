@@ -4,11 +4,17 @@ import threading
 from flask import Flask
 from types import SimpleNamespace
 
+import pytest
 from app.api import graph as graph_api
 from app.api import simulation as simulation_api
 from app.models.project import Project, ProjectStatus
 from app.services.simulation_manager import SimulationStatus
 from app.models.task import TaskStatus
+
+
+@pytest.fixture(autouse=True)
+def zep_memory_backend(monkeypatch):
+    monkeypatch.setattr(graph_api.Config, "MEMORY_BACKEND", "zep")
 
 
 def _project(status, graph_id="graph-1"):

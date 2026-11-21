@@ -27,6 +27,23 @@ from ..models.project import ProjectManager
 logger = get_logger('mirofish.api.simulation')
 
 
+def _project_backend_conflict_response(project):
+    if project.uses_active_memory_backend():
+        return None
+    return jsonify({"success": False, "error": project.memory_backend_conflict()}), 409
+
+
+def _graph_backend_conflict_response(graph_id: str):
+    projects = ProjectManager.find_projects_by_graph_id(graph_id)
+    if not projects:
+        return jsonify({"success": False, "error": "No local project references this graph"}), 404
+    for project in projects:
+        conflict = _project_backend_conflict_response(project)
+        if conflict:
+            return conflict
+    return None
+
+
 def _get_default_platform(simulation_id: str) -> str:
     """
     根据模拟配置返回默认平台
@@ -87,11 +104,14 @@ def get_graph_entities(graph_id: str):
         enrich: 是否获取相关边信息（默认true）
     """
     try:
-        if not Config.ZEP_API_KEY:
+        if not Config.memory_backend_configured():
             return jsonify({
                 "success": False,
                 "error": t('api.zepApiKeyMissing')
             }), 500
+        conflict = _graph_backend_conflict_response(graph_id)
+        if conflict:
+            return conflict
         
         entity_types_str = request.args.get('entity_types', '')
         entity_types = [t.strip() for t in entity_types_str.split(',') if t.strip()] if entity_types_str else None
@@ -124,11 +144,14 @@ def get_graph_entities(graph_id: str):
 def get_entity_detail(graph_id: str, entity_uuid: str):
     """获取单个实体的详细信息"""
     try:
-        if not Config.ZEP_API_KEY:
+        if not Config.memory_backend_configured():
             return jsonify({
                 "success": False,
                 "error": t('api.zepApiKeyMissing')
             }), 500
+        conflict = _graph_backend_conflict_response(graph_id)
+        if conflict:
+            return conflict
         
         reader = ZepEntityReader()
         entity = reader.get_entity_with_context(graph_id, entity_uuid)
@@ -157,11 +180,14 @@ def get_entity_detail(graph_id: str, entity_uuid: str):
 def get_entities_by_type(graph_id: str, entity_type: str):
     """获取指定类型的所有实体"""
     try:
-        if not Config.ZEP_API_KEY:
+        if not Config.memory_backend_configured():
             return jsonify({
                 "success": False,
                 "error": t('api.zepApiKeyMissing')
             }), 500
+        conflict = _graph_backend_conflict_response(graph_id)
+        if conflict:
+            return conflict
         
         enrich = request.args.get('enrich', 'true').lower() == 'true'
         
@@ -237,6 +263,10 @@ def create_simulation():
                 "success": False,
                 "error": t('api.projectNotFound', id=project_id)
             }), 404
+
+        conflict = _project_backend_conflict_response(project)
+        if conflict:
+            return conflict
         
         graph_id = data.get('graph_id') or project.graph_id
         if not graph_id:
@@ -244,6 +274,11 @@ def create_simulation():
                 "success": False,
                 "error": t('api.graphNotBuilt')
             }), 400
+        if graph_id != project.graph_id:
+            return jsonify({
+                "success": False,
+                "error": "The graph does not belong to this project",
+            }), 409
         
         manager = SimulationManager()
         state = manager.create_simulation(
@@ -450,6 +485,15 @@ def prepare_simulation():
                 "success": False,
                 "error": t('api.simulationNotFound', id=simulation_id)
             }), 404
+
+        project = ProjectManager.get_project(state.project_id)
+        if not project:
+            return jsonify({"success": False, "error": t('api.projectNotFound', id=state.project_id)}), 404
+        conflict = _project_backend_conflict_response(project)
+        if conflict:
+            return conflict
+        if state.graph_id != project.graph_id:
+            return jsonify({"success": False, "error": "The simulation references a different project graph"}), 409
         
         # 检查是否强制重新生成
         force_regenerate = data.get('force_regenerate', False)
@@ -476,13 +520,6 @@ def prepare_simulation():
                 logger.info(f"模拟 {simulation_id} 未准备完成，将启动准备任务")
         
         # 从项目获取必要信息
-        project = ProjectManager.get_project(state.project_id)
-        if not project:
-            return jsonify({
-                "success": False,
-                "error": t('api.projectNotFound', id=state.project_id)
-            }), 404
-        
         # 获取模拟需求
         simulation_requirement = project.simulation_requirement or ""
         if not simulation_requirement:
@@ -1446,6 +1483,9 @@ def generate_profiles():
                 "success": False,
                 "error": t('api.requireGraphId')
             }), 400
+        conflict = _graph_backend_conflict_response(graph_id)
+        if conflict:
+            return conflict
         
         entity_types = data.get('entity_types')
         use_llm = data.get('use_llm', True)
@@ -1594,6 +1634,15 @@ def start_simulation():
                 "success": False,
                 "error": t('api.simulationNotFound', id=simulation_id)
             }), 404
+
+        project = ProjectManager.get_project(state.project_id)
+        if not project:
+            return jsonify({"success": False, "error": t('api.projectNotFound', id=state.project_id)}), 404
+        conflict = _project_backend_conflict_response(project)
+        if conflict:
+            return conflict
+        if state.graph_id != project.graph_id:
+            return jsonify({"success": False, "error": "The simulation references a different project graph"}), 409
 
         force_restarted = False
         

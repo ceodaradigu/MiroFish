@@ -27,6 +27,23 @@ from ..utils.zep_lifecycle import (
 logger = get_logger('mirofish.api.report')
 
 
+def _project_backend_conflict_response(project):
+    if project.uses_active_memory_backend():
+        return None
+    return jsonify({"success": False, "error": project.memory_backend_conflict()}), 409
+
+
+def _graph_backend_conflict_response(graph_id: str):
+    projects = ProjectManager.find_projects_by_graph_id(graph_id)
+    if not projects:
+        return jsonify({"success": False, "error": "No local project references this graph"}), 404
+    for project in projects:
+        conflict = _project_backend_conflict_response(project)
+        if conflict:
+            return conflict
+    return None
+
+
 # ============== 报告生成接口 ==============
 
 @report_bp.route('/generate', methods=['POST'])
@@ -123,6 +140,9 @@ def generate_report():
                 "success": False,
                 "error": t('api.projectNotFound', id=state.project_id)
             }), 404
+        conflict = _project_backend_conflict_response(project)
+        if conflict:
+            return conflict
         
         if project.status != ProjectStatus.GRAPH_COMPLETED:
             return jsonify({
@@ -172,6 +192,7 @@ def generate_report():
             if (
                 refreshed_state is None
                 or refreshed_project is None
+                or not refreshed_project.uses_active_memory_backend()
                 or refreshed_project.graph_id != graph_id
                 or refreshed_project.status != ProjectStatus.GRAPH_COMPLETED
                 or (
@@ -650,6 +671,11 @@ def chat_with_report_agent():
                 "success": False,
                 "error": t('api.projectNotFound', id=state.project_id)
             }), 404
+        conflict = _project_backend_conflict_response(project)
+        if conflict:
+            return conflict
+        if state.graph_id and state.graph_id != project.graph_id:
+            return jsonify({"success": False, "error": "The simulation references a different project graph"}), 409
         
         graph_id = state.graph_id or project.graph_id
         if not graph_id:
@@ -1075,6 +1101,9 @@ def search_graph_tool():
                 "success": False,
                 "error": t('api.requireGraphIdAndQuery')
             }), 400
+        conflict = _graph_backend_conflict_response(graph_id)
+        if conflict:
+            return conflict
         
         from ..services.zep_tools import ZepToolsService
         
@@ -1119,6 +1148,9 @@ def get_graph_statistics_tool():
                 "success": False,
                 "error": t('api.requireGraphId')
             }), 400
+        conflict = _graph_backend_conflict_response(graph_id)
+        if conflict:
+            return conflict
         
         from ..services.zep_tools import ZepToolsService
         

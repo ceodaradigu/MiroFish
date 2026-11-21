@@ -39,8 +39,10 @@ def test_realtime_endpoints_expose_terminal_failure(tmp_path, monkeypatch):
     app.config.update(TESTING=True)
     client = app.test_client()
 
-    config_response = client.get(f"/api/simulation/{simulation_id}/config/realtime")
-    profile_response = client.get(f"/api/simulation/{simulation_id}/profiles/realtime")
+    # Plan mode accepts only the local server host, including in test_client.
+    local_server = "http://127.0.0.1:5001"
+    config_response = client.get(f"/api/simulation/{simulation_id}/config/realtime", base_url=local_server)
+    profile_response = client.get(f"/api/simulation/{simulation_id}/profiles/realtime", base_url=local_server)
 
     assert config_response.status_code == 200
     expected_config_state = {

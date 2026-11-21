@@ -4,7 +4,14 @@ from types import SimpleNamespace
 import pytest
 from zep_cloud.core.api_error import ApiError as ZepApiError
 
+from app.config import Config
 from app.utils import zep
+
+
+@pytest.fixture(autouse=True)
+def zep_cloud_mode(monkeypatch):
+    """Keep Cloud client contract tests independent of the local .env mode."""
+    monkeypatch.setattr(Config, "MEMORY_BACKEND", "zep")
 
 
 def test_permanent_zep_errors_fail_without_retry():

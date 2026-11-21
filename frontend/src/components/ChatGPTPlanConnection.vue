@@ -47,9 +47,10 @@
       <p v-if="!loadingModels && models.length === 0" class="attention">{{ copy.noModels }}</p>
     </div>
 
-    <p class="zep-note" :class="{ attention: !status.zepConfigured }">
-      {{ status.zepConfigured ? copy.zepReady : copy.zepRequired }}
+    <p class="zep-note" :class="{ attention: !status.memoryReady }">
+      {{ status.memoryBackend === 'local' ? copy.localMemory : (status.zepConfigured ? copy.zepReady : copy.zepRequired) }}
     </p>
+    <p v-if="status.memoryBackend === 'local'" class="consent-note">{{ copy.localPrivacy }}</p>
     <p v-if="errorMessage" class="attention" role="alert">{{ errorMessage }}</p>
   </section>
 </template>
@@ -86,6 +87,8 @@ const messages = {
     noModels: 'No hay modelos disponibles para esta cuenta.',
     zepRequired: 'Zep Cloud sigue siendo necesario para las simulaciones y se configura por separado.',
     zepReady: 'Zep Cloud está configurado por separado.',
+    localMemory: 'Memoria local seleccionada: los grafos se guardan en este ordenador, sin cuenta de Zep.',
+    localPrivacy: 'La extracción usa ChatGPT y la base local no está cifrada. Usa solo datos públicos o ficticios.',
     statusError: 'No se pudo comprobar la conexión local. Verifica que el servidor esté iniciado.',
     modelsError: 'No se pudo cargar la lista de modelos autorizados.',
     saveError: 'No se pudo guardar el modelo.'
@@ -111,6 +114,8 @@ const messages = {
     noModels: 'No models are available for this account.',
     zepRequired: 'Zep Cloud is still required for simulations and is configured separately.',
     zepReady: 'Zep Cloud is configured separately.',
+    localMemory: 'Local memory selected: graphs stay on this computer; no Zep account is needed.',
+    localPrivacy: 'Extraction uses ChatGPT and the local database is not encrypted. Use public or fictional data only.',
     statusError: 'Could not check the local connection. Make sure the server is running.',
     modelsError: 'Could not load the authorized models.',
     saveError: 'Could not save the model.'
@@ -136,6 +141,8 @@ const messages = {
     noModels: '此账户暂无可用模型。',
     zepRequired: '模拟仍需要单独配置 Zep Cloud。',
     zepReady: 'Zep Cloud 已单独配置。',
+    localMemory: '已选择本地记忆：图谱保存在此电脑，无需 Zep 账户。',
+    localPrivacy: '提取仍使用 ChatGPT，本地数据库未加密。请仅使用公开或虚构数据。',
     statusError: '无法检查本地连接，请确认服务器已启动。',
     modelsError: '无法加载已授权模型。',
     saveError: '无法保存模型。'
@@ -146,7 +153,7 @@ const copy = computed(() => {
   if (navigator.language?.toLowerCase().startsWith('es')) return messages.es
   return messages[locale.value] || messages.en
 })
-const status = reactive({ connected: false, planUsageEnabled: false, zepConfigured: false, selectedModel: '' })
+const status = reactive({ connected: false, planUsageEnabled: false, memoryBackend: 'zep', memoryReady: false, zepConfigured: false, selectedModel: '' })
 const planMode = ref(null)
 const models = ref([])
 const pendingModel = ref('')
@@ -155,7 +162,7 @@ const loadingModels = ref(false)
 const savingModel = ref(false)
 const errorMessage = ref('')
 const connectionReady = computed(() => planMode.value === false || (
-  planMode.value === true && status.connected && status.planUsageEnabled && status.zepConfigured &&
+  planMode.value === true && status.connected && status.planUsageEnabled && status.memoryReady &&
   !!status.selectedModel && models.value.some(model => model.slug === status.selectedModel)
 ))
 const stateLabel = computed(() => {
@@ -193,6 +200,8 @@ async function refreshStatus() {
     planMode.value = response.planMode === false ? false : true
     status.connected = response.connected === true
     status.planUsageEnabled = response.planUsageEnabled === true
+    status.memoryBackend = response.memoryBackend === 'local' ? 'local' : 'zep'
+    status.memoryReady = response.memoryReady === true
     status.zepConfigured = response.zepConfigured === true
     status.selectedModel = typeof response.selectedModel === 'string' ? response.selectedModel : ''
     pendingModel.value = status.selectedModel
@@ -202,6 +211,8 @@ async function refreshStatus() {
     planMode.value = null
     status.connected = false
     status.planUsageEnabled = false
+    status.memoryBackend = 'zep'
+    status.memoryReady = false
     status.zepConfigured = false
     status.selectedModel = ''
     models.value = []

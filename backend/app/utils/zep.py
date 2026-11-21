@@ -1,4 +1,4 @@
-"""Shared Zep Cloud client, request limits, and retry policy."""
+"""Shared graph-memory client, request limits, and retry policy."""
 
 from __future__ import annotations
 
@@ -62,8 +62,21 @@ def _cached_zep_client(api_key: str, timeout: float) -> Zep:
     )
 
 
+def resolve_memory_api_key(api_key: str | None = None) -> str | None:
+    """Resolve a Cloud key without carrying it into the local-memory backend."""
+
+    if Config.is_local_memory():
+        return None
+    return (api_key or Config.ZEP_API_KEY or "").strip() or None
+
+
 def get_zep_client(api_key: str | None = None, timeout: float | None = None) -> Zep:
-    """Return a process-shared, explicitly configured Zep Cloud client."""
+    """Return the configured process-shared graph-memory client."""
+
+    if Config.is_local_memory():
+        from .local_graph import get_local_zep_client
+
+        return get_local_zep_client()
 
     # zep-cloud gives ZEP_API_URL precedence even when base_url is explicit.
     # Reject it so this Cloud-only integration cannot silently target a
@@ -71,7 +84,7 @@ def get_zep_client(api_key: str | None = None, timeout: float | None = None) -> 
     if os.environ.get("ZEP_API_URL"):
         raise ValueError("ZEP_API_URL is unsupported; unset it to use Zep Cloud")
 
-    normalized_key = (api_key or Config.ZEP_API_KEY or "").strip()
+    normalized_key = resolve_memory_api_key(api_key)
     if not normalized_key:
         raise ValueError("ZEP_API_KEY 未配置")
 
@@ -87,6 +100,10 @@ def clear_zep_client_cache() -> None:
     """Clear cached clients. Intended for tests and controlled reconfiguration."""
 
     _cached_zep_client.cache_clear()
+    if Config.is_local_memory():
+        from .local_graph import clear_local_zep_clients
+
+        clear_local_zep_clients()
 
 
 def is_retryable_zep_error(error: BaseException) -> bool:

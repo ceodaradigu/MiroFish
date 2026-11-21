@@ -24,6 +24,7 @@ FRONTEND = "http://127.0.0.1:3000"
 def app_for_mode(monkeypatch):
     def build(plan_mode: bool):
         monkeypatch.setattr(Config, "CHATGPT_PLAN_MODE", plan_mode)
+        monkeypatch.setattr(Config, "MEMORY_BACKEND", "zep")
         monkeypatch.setattr(Config, "LLM_MODEL_NAME", "")
         monkeypatch.setattr(Config, "ZEP_API_KEY", None)
         # Model selection writes these process variables; monkeypatch restores
@@ -56,6 +57,7 @@ def test_plan_status_is_safe_and_reflects_required_connections(app_for_mode, mon
     assert response.status_code == 200
     assert response.json == {
         "planMode": True, "connected": False, "planUsageEnabled": False,
+        "memoryBackend": "zep", "memoryReady": False,
         "zepConfigured": False, "selectedModel": "",
     }
     assert response.headers["Cache-Control"] == "no-store"
@@ -67,7 +69,7 @@ def test_plan_status_is_safe_and_reflects_required_connections(app_for_mode, mon
     monkeypatch.setattr(Config, "ZEP_API_KEY", "fake-zep-test-value")
     monkeypatch.setattr(Config, "LLM_MODEL_NAME", "gpt-visible-test")
     state = client.get("/api/chatgpt/status", base_url=LOCAL).json
-    assert state["connected"] and state["planUsageEnabled"] and state["zepConfigured"]
+    assert state["connected"] and state["planUsageEnabled"] and state["memoryReady"] and state["zepConfigured"]
     assert state["selectedModel"] == "gpt-visible-test"
     assert not any(key in state for key in ("access_token", "refresh_token", "subject", "client_id"))
 

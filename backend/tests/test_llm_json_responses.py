@@ -2,7 +2,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.config import Config
 from app.utils.llm_client import LLMClient, LLMResponseError
+
+
+@pytest.fixture(autouse=True)
+def ordinary_api_mode(monkeypatch):
+    """These request-shape checks exercise the normal API path, not plan mode."""
+    monkeypatch.setattr(Config, "CHATGPT_PLAN_MODE", False)
 
 
 class CompletionSequence:
