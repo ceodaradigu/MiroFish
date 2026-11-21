@@ -14,6 +14,7 @@ from ..services.report_agent import ReportAgent, ReportManager, ReportStatus
 from ..services.simulation_manager import SimulationManager
 from ..services.simulation_runner import SimulationRunner, RunnerStatus
 from ..services.zep_graph_memory_updater import ZepGraphMemoryManager
+from ..services.plan_work_guard import retain_request_plan_work, release_plan_work
 from ..models.project import ProjectManager, ProjectStatus
 from ..models.task import TaskManager, TaskStatus
 from ..utils.logger import get_logger
@@ -264,8 +265,8 @@ def generate_report():
             register_graph_reader(graph_id, report_id)
 
             def run_generate():
-                set_locale(current_locale)
                 try:
+                    set_locale(current_locale)
                     task_manager.update_task(
                         task_id,
                         status=TaskStatus.PROCESSING,
@@ -310,13 +311,20 @@ def generate_report():
                     logger.error(f"报告生成失败: {str(e)}")
                     task_manager.fail_task(task_id, str(e))
                 finally:
-                    unregister_graph_reader(graph_id, report_id)
+                    try:
+                        unregister_graph_reader(graph_id, report_id)
+                    finally:
+                        release_plan_work(plan_lease)
 
+            plan_lease = retain_request_plan_work()
             try:
                 thread = threading.Thread(target=run_generate, daemon=True)
                 thread.start()
             except Exception:
-                unregister_graph_reader(graph_id, report_id)
+                try:
+                    unregister_graph_reader(graph_id, report_id)
+                finally:
+                    release_plan_work(plan_lease)
                 raise
         
         return jsonify({

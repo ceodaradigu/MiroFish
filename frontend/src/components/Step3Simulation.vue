@@ -91,7 +91,24 @@
       </div>
 
       <div class="action-controls">
+        <button
+          v-if="isFinalizing || (phase === 1 && runStatus.runner_status === 'stopping')"
+          class="action-btn primary"
+          disabled
+        >
+          <span class="loading-spinner-small"></span>
+          {{ $t('step3.savingGraphBtn') }}
+        </button>
+        <button
+          v-else-if="canFinalize"
+          class="action-btn primary"
+          @click="handleFinalizeSimulation"
+        >
+          {{ $t('step3.finishSimulationBtn') }}
+          <span class="arrow-icon">→</span>
+        </button>
         <button 
+          v-else
           class="action-btn primary"
           :disabled="phase !== 2 || isGeneratingReport"
           @click="handleNextStep"
@@ -292,6 +309,7 @@ import { useI18n } from 'vue-i18n'
 import {
   startSimulation,
   stopSimulation,
+  closeSimulationEnv,
   getRunStatus,
   getRunStatusDetail
 } from '../api/simulation'
@@ -320,6 +338,7 @@ const isGeneratingReport = ref(false)
 const phase = ref(0) // 0: 未开始, 1: 运行中, 2: 已完成
 const isStarting = ref(false)
 const isStopping = ref(false)
+const isFinalizing = ref(false)
 const startError = ref(null)
 const runStatus = ref({})
 const allActions = ref([]) // 所有动作（增量累积）
@@ -340,6 +359,15 @@ const twitterActionsCount = computed(() => {
 const redditActionsCount = computed(() => {
   return allActions.value.filter(a => a.platform === 'reddit').length
 })
+
+// The simulation process remains alive for optional interviews after both
+// platforms finish. It must be closed before graph ingestion can drain and
+// the authoritative runner status becomes completed.
+const canFinalize = computed(() =>
+  phase.value === 1 &&
+  runStatus.value.runner_status === 'running' &&
+  checkPlatformsCompleted(runStatus.value)
+)
 
 // 格式化模拟流逝时间（根据轮次和每轮分钟数计算）
 const formatElapsedTime = (currentRound) => {
@@ -376,6 +404,7 @@ const resetAllState = () => {
   startError.value = null
   isStarting.value = false
   isStopping.value = false
+  isFinalizing.value = false
   stopPolling()  // 停止之前可能存在的轮询
 }
 
@@ -462,6 +491,26 @@ const handleStopSimulation = async () => {
   }
 }
 
+const handleFinalizeSimulation = async () => {
+  if (!props.simulationId || !canFinalize.value || isFinalizing.value) return
+
+  isFinalizing.value = true
+  addLog(t('log.finalizingSim'))
+  try {
+    const res = await closeSimulationEnv({ simulation_id: props.simulationId })
+    if (!res.success) {
+      throw new Error(res.error || t('common.unknownError'))
+    }
+    addLog(t('log.finalizationRequested'))
+    // Keep polling: close-env acknowledges the command before the process
+    // exits and before the backend's graph-ingestion barrier completes.
+    await fetchRunStatus()
+  } catch (err) {
+    addLog(t('log.finalizationFailed', { error: err.message }))
+    isFinalizing.value = false
+  }
+}
+
 // 轮询状态
 let statusTimer = null
 let detailTimer = null
@@ -516,13 +565,15 @@ const fetchRunStatus = async () => {
       const isFailed = data.runner_status === 'failed'
       
       // runner_status is authoritative because the backend only publishes a
-      // terminal state after the Zep ingestion barrier has completed.
+      // terminal state after graph ingestion has completed.
       if (isFailed) {
+        isFinalizing.value = false
         addLog(t('log.simFailed') + (data.error ? `: ${data.error}` : ''))
         phase.value = 2
         stopPolling()
         emit('update-status', 'error')
       } else if (isCompleted) {
+        isFinalizing.value = false
         addLog(t('log.simCompleted'))
         phase.value = 2
         stopPolling()

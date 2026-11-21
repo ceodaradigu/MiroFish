@@ -104,9 +104,11 @@ class LLMClient:
         if not self.api_key:
             raise ValueError("LLM_API_KEY 未配置")
         
+        client_options = {"max_retries": 0} if Config.CHATGPT_PLAN_MODE else {}
         self.client = OpenAI(
             api_key=self.api_key,
-            base_url=self.base_url
+            base_url=self.base_url,
+            **client_options,
         )
 
     def _create_completion(

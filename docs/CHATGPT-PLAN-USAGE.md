@@ -8,7 +8,7 @@ use this integration. The app never asks for a password or a token.
 The integration follows OpenAI's [open-source sign-in guide](https://developers.openai.com/siwc/token-sharing-open-source/sign-in.md)
 and [model/inference guide](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference.md).
 It targets MiroFish running on the same computer, bound to `127.0.0.1`. It is
-not configured for a hosted service or for Tallerna's production server.
+not configured for a hosted production service.
 
 ## Local preparation
 
@@ -28,9 +28,18 @@ not configured for a hosted service or for Tallerna's production server.
    listed for the account.
    OpenAI binds an issued client ID to the account and workspace used at
    registration. If its page says the account cannot access this application,
-   stop there. Resolve access through the owning workspace; MiroFish cannot
-   override that restriction, and repeating the same authorization will not
-   grant access.
+   stop that authorization. Repeating it with the same client ID will not
+   grant access. If the saved registration belongs to a different account or
+   workspace from the one you originally intended to use, choose **Register
+   another account or workspace**.
+   This starts OpenAI's separate registration flow and preserves the original
+   client ID in the local file. The interface does not currently switch back
+   to an older registration. Only a verified identity can become the active
+   account. OpenAI
+   still decides whether the intended account may use this integration; stop
+   if it denies the new registration too. Do not use the separate registration
+   to retry the same denied account and workspace. Do not erase a saved
+   registration or reuse its client ID for another account or workspace.
 5. The local graph is stored in the ignored `backend/uploads/local_graph.db`.
    `ZEP_API_KEY` is not needed in local mode. The original Zep Cloud route is
    still available by selecting `MEMORY_BACKEND=zep` and configuring its key.
@@ -60,11 +69,26 @@ account's plan. Search starts with local BM25 keyword ranking. It does not
 replicate Zep's temporal conflict handling or semantic ranking, and the local
 SQLite file is not encrypted. See [local memory details](LOCAL-MEMORY.md).
 
-This code has automated, credential-free tests. It has not yet completed a
-real OAuth consent or full simulation. No prediction for
-Tallerna should be reported until those steps actually run. Even then,
-simulated agents are a source of hypotheses, not real customer evidence.
+The simulation process stays open for optional agent interviews after its
+rounds finish. The UI offers an explicit **Finish run and close interviews**
+step to let graph ingestion drain and enable the report. Interviews after
+that step are unavailable; the post-report interview flow has not been
+verified in this local mode.
 
-Keep Tallerna source notes and any real business data in a local ignored
-folder. Do not commit `.env`, `backend/uploads/`, logs, OAuth artifacts, or
-the Tallerna scenario to this public fork.
+This code has automated, credential-free tests. On 21 November 2026, a real
+account completed OpenAI's consent on a local machine, listed its available
+models, and completed the guide's minimal streamed inference request. A local
+hypothetical workshop scenario then completed ontology generation, local graph
+ingestion, five simulated profiles, ten rounds on two simulated platforms
+(28 actions), and a four-section report. The first ontology attempt exposed a
+JSON-mode validation issue: the adapter moved a system JSON instruction into
+`instructions`, while the Responses API required a JSON instruction in
+`input`. The adapter now supplies it there. In this run the local graph had
+13 entity nodes but no extracted edges, so graph relationships did not add
+evidence to the report. The run demonstrates a working local path for this
+bounded scenario, not general reliability or predictive accuracy. Simulated
+agents provide hypotheses, never real customer evidence.
+
+Keep scenario notes and any real business data in a local ignored folder. Do
+not commit `.env`, `backend/uploads/`, logs, OAuth artifacts, or private
+scenario content to this public fork.

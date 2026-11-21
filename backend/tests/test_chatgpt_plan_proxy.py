@@ -11,6 +11,7 @@ from openai import OpenAI
 
 from app.api.chatgpt_proxy import chatgpt_proxy_bp
 from app.config import Config
+import app.services.chatgpt_plan_proxy as plan_proxy
 from app.services.chatgpt_plan_proxy import (
     ProxyPlanUsageError,
     ProxyRequestError,
@@ -50,6 +51,23 @@ def test_text_request_uses_stateless_streamed_responses_and_json_mode():
         "instructions": "Be concise", "store": False, "stream": True,
         "text": {"format": {"type": "json_object"}},
     }
+
+
+def test_json_mode_keeps_explicit_format_instruction_in_responses_input():
+    request, _, _ = build_responses_request({
+        "model": "gpt-test",
+        "messages": [
+            {"role": "system", "content": "Return valid JSON with an ontology."},
+            {"role": "user", "content": "Create an ontology for these workshops."},
+        ],
+        "response_format": {"type": "json_object"},
+    })
+
+    assert request["instructions"] == "Return valid JSON with an ontology."
+    assert request["input"] == [{
+        "role": "user",
+        "content": "Create an ontology for these workshops.\n\nReturn a JSON object.",
+    }]
 
 
 def test_function_tools_and_history_round_trip_to_responses_items():
@@ -248,6 +266,161 @@ def test_plan_usage_error_is_distinct_from_generic_upstream_failure(code):
             "model": "gpt-test", "messages": [{"role": "user", "content": "hi"}],
         }, stream_factory=lambda **_: iter([event]))
     assert raised.value.code == code
+
+
+def test_admission_failure_keeps_safe_diagnostics_without_logging_provider_text(caplog):
+    class AdmissionError(RuntimeError):
+        status_code = 400
+        request_id = "req-test-123"
+        body = {"error": {
+            "code": "subscription_sharing_unsupported_capability",
+            "param": "text.format",
+            "type": "invalid_request_error",
+            "message": "Invalid input contains private request and bearer text",
+        }}
+
+        def __str__(self):
+            return "private request and bearer text"
+
+    def reject(**_kwargs):
+        raise AdmissionError()
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(ProxyUpstreamError) as raised:
+            create_completion({
+                "model": "gpt-test", "messages": [{"role": "user", "content": "private prompt"}],
+            }, stream_factory=reject)
+
+    assert raised.value.http_status == 400
+    assert raised.value.code == "subscription_sharing_unsupported_capability"
+    assert raised.value.param == "text.format"
+    assert raised.value.request_id is None
+    assert raised.value.provider_type == "invalid_request_error"
+    assert raised.value.category == "invalid_input"
+    assert "stage=request" in caplog.text
+    assert "provider_type=invalid_request_error category=invalid_input" in caplog.text
+    assert "body_shape=object[error]/error[code,message,param,type]" in caplog.text
+    assert "private request" not in caplog.text
+    assert "private prompt" not in caplog.text
+
+
+def test_stream_error_classifies_input_failure_without_provider_prose(caplog):
+    class StreamError(RuntimeError):
+        body = {
+            "code": None, "param": "input", "type": "invalid_request_error",
+            "message": "Input should be valid; private provider prose",
+        }
+
+    def stream(**_kwargs):
+        def events():
+            raise StreamError("private provider prose")
+            yield None  # pragma: no cover
+
+        return events()
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(ProxyUpstreamError) as raised:
+            create_completion({
+                "model": "gpt-test",
+                "messages": [{"role": "user", "content": "private prompt"}],
+            }, stream_factory=stream)
+
+    assert raised.value.http_status == 502
+    assert raised.value.param == "input"
+    assert raised.value.provider_type == "invalid_request_error"
+    assert raised.value.category == "invalid_input"
+    assert "stage=stream" in caplog.text
+    assert "provider_type=invalid_request_error category=invalid_input" in caplog.text
+    assert "private provider prose" not in caplog.text
+    assert "private prompt" not in caplog.text
+
+
+def test_unknown_upstream_identifiers_cannot_leak_in_diagnostics(caplog):
+    class UpstreamError(RuntimeError):
+        status_code = 400
+        request_id = "req_private_token_made_up"
+        body = {"error": {
+            "code": "sk_fake_secret_code", "param": "sk_fake_secret_param",
+            "type": "invalid_request_error", "message": "private provider prose",
+            "sk_fake_secret_key": "private",
+        }}
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(ProxyUpstreamError) as raised:
+            create_completion({
+                "model": "gpt-test", "messages": [{"role": "user", "content": "hello"}],
+            }, stream_factory=lambda **_: (_ for _ in ()).throw(UpstreamError()))
+
+    assert raised.value.code is None
+    assert raised.value.param is None
+    assert "sk_fake_secret" not in caplog.text
+    assert "private provider prose" not in caplog.text
+
+
+def test_opt_in_error_skeleton_is_redacted_and_used_once(monkeypatch, caplog):
+    secret_email = "user@example.com"
+    secret_token = "sk-super-secret"
+    fictional_text = "Fictional workshop invoice details"
+
+    class StreamError(RuntimeError):
+        body = {
+            "code": None, "param": "input", "type": "invalid_request_error",
+            "message": f"Input must be an array: {secret_email}; Bearer {secret_token}; {fictional_text}.",
+        }
+
+    def stream(**_kwargs):
+        def events():
+            raise StreamError("private upstream text")
+            yield None  # pragma: no cover
+
+        return events()
+
+    payload = {"model": "gpt-test", "messages": [{"role": "user", "content": fictional_text}]}
+    monkeypatch.setattr(plan_proxy, "_error_message_diagnostic", plan_proxy._OneShotErrorMessageDiagnostic(True))
+    with caplog.at_level("ERROR"):
+        for _ in range(2):
+            with pytest.raises(ProxyUpstreamError):
+                create_completion(payload, stream_factory=stream)
+
+    skeletons = [record.message for record in caplog.records if "one-shot error skeleton" in record.message]
+    assert len(skeletons) == 1
+    assert "input must" in skeletons[0]
+    assert "array" in skeletons[0]
+    for secret in (secret_email, "Bearer", secret_token, fictional_text, "private upstream text"):
+        assert secret not in caplog.text
+
+
+def test_error_skeleton_disabled_by_default(monkeypatch, caplog):
+    monkeypatch.setattr(plan_proxy, "_error_message_diagnostic", plan_proxy._OneShotErrorMessageDiagnostic(False))
+    with caplog.at_level("ERROR"):
+        plan_proxy._log_upstream_failure("stream", body={"message": "Input must be an array: private secret"})
+    assert "one-shot error skeleton" not in caplog.text
+    assert "private secret" not in caplog.text
+
+
+def test_proxy_returns_safe_upstream_status_code_and_request_id(monkeypatch):
+    app = Flask(__name__)
+    app.register_blueprint(chatgpt_proxy_bp)
+    client = app.test_client()
+    monkeypatch.setenv("MIROFISH_PLAN_PROXY_TOKEN", "local-only-test-token")
+    monkeypatch.setattr(Config, "LLM_MODEL_NAME", "gpt-test")
+    monkeypatch.setattr(
+        "app.api.chatgpt_proxy.create_completion",
+        lambda _payload: (_ for _ in ()).throw(ProxyUpstreamError(
+            "private provider message", http_status=403,
+            code="subscription_sharing_user_not_eligible", request_id="req-test-456",
+        )),
+    )
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "gpt-test", "messages": [{"role": "user", "content": "hi"}]},
+        headers={"Authorization": "Bearer local-only-test-token"},
+    )
+    assert response.status_code == 403
+    assert response.json["error"]["code"] == "subscription_sharing_user_not_eligible"
+    assert response.json["error"]["request_id"] == "req-test-456"
+    assert "private provider message" not in response.get_data(as_text=True)
+    assert response.headers["Cache-Control"] == "no-store"
 
 
 def test_http_route_requires_loopback_secret_and_rejects_browser_origin(monkeypatch):

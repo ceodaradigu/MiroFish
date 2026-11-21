@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import OpenAI
 
 from app.config import Config
 from app.utils.llm_client import LLMClient, LLMResponseError
@@ -51,6 +53,26 @@ def _client_for(sequence):
         chat=SimpleNamespace(completions=sequence)
     )
     return client
+
+
+def test_plan_mode_does_not_retry_failed_local_proxy_request(monkeypatch):
+    calls = []
+
+    def reject(request):
+        calls.append(request)
+        return httpx.Response(502, json={"error": {"message": "local adapter unavailable"}})
+
+    transport = httpx.Client(transport=httpx.MockTransport(reject))
+    monkeypatch.setattr(Config, "CHATGPT_PLAN_MODE", True)
+    monkeypatch.setattr(
+        "app.utils.llm_client.OpenAI",
+        lambda **kwargs: OpenAI(http_client=transport, **kwargs),
+    )
+    client = LLMClient(api_key="local-test-token", base_url="http://127.0.0.1:5001/v1", model="gpt-test")
+    with pytest.raises(Exception) as raised:
+        client.chat([{"role": "user", "content": "hi"}], response_format=None)
+    assert getattr(raised.value, "status_code", None) == 502
+    assert len(calls) == 1
 
 
 def test_chat_json_retries_truncated_completion_without_token_cap():

@@ -19,6 +19,7 @@ from ..services.simulation_runner import (
     SimulationStopPending,
 )
 from ..services.zep_graph_memory_updater import ZepGraphMemoryManager
+from ..services.plan_work_guard import retain_request_plan_work, release_plan_work
 from ..utils.logger import get_logger
 from ..utils.locale import t, get_locale, set_locale
 from ..utils.zep_lifecycle import get_graph_readers, graph_lifecycle_lock
@@ -573,8 +574,8 @@ def prepare_simulation():
 
         # 定义后台任务
         def run_prepare():
-            set_locale(current_locale)
             try:
+                set_locale(current_locale)
                 task_manager.update_task(
                     task_id,
                     status=TaskStatus.PROCESSING,
@@ -678,10 +679,17 @@ def prepare_simulation():
                     state.status = SimulationStatus.FAILED
                     state.error = str(e)
                     manager._save_simulation_state(state)
+            finally:
+                release_plan_work(plan_lease)
         
         # 启动后台线程
+        plan_lease = retain_request_plan_work()
         thread = threading.Thread(target=run_prepare, daemon=True)
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            release_plan_work(plan_lease)
+            raise
         
         return jsonify({
             "success": True,

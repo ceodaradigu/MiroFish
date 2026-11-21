@@ -24,6 +24,7 @@ from ..models.task import TaskManager, TaskStatus
 from ..models.project import ProjectManager, ProjectStatus
 from ..services.simulation_manager import SimulationManager
 from ..services.simulation_runner import SimulationRunner, RunnerStatus
+from ..services.plan_work_guard import retain_request_plan_work, release_plan_work
 from ..services.zep_graph_memory_updater import ZepGraphMemoryManager
 from ..utils.llm_client import LLMResponseError
 
@@ -667,9 +668,10 @@ def _build_graph_impl():
 
         # 启动后台任务
         def build_task():
-            set_locale(current_locale)
-            build_logger = get_logger('mirofish.build')
+            build_logger = logger
             try:
+                set_locale(current_locale)
+                build_logger = get_logger('mirofish.build')
                 build_logger.info(f"[{task_id}] 开始构建图谱...")
                 task_manager.update_task(
                     task_id, 
@@ -833,10 +835,17 @@ def _build_graph_impl():
                         message=t('progress.buildFailed', error=str(e)),
                         error=traceback.format_exc()
                     )
+            finally:
+                release_plan_work(plan_lease)
         
         # 启动后台线程
+        plan_lease = retain_request_plan_work()
         thread = threading.Thread(target=build_task, daemon=True)
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            release_plan_work(plan_lease)
+            raise
         
         return jsonify({
             "success": True,

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import threading
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -17,6 +19,39 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 LOGGER = logging.getLogger(__name__)
 TOOL_NAMESPACE = "mirofish_actions"
 _TOOL_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+_SAFE_ERROR_TYPES = {
+    "invalid_request_error", "authentication_error", "permission_error",
+    "rate_limit_error", "server_error", "api_error",
+}
+# Only these generic protocol words can appear in the optional diagnostic.
+# Every other word (including names, credentials and request text) is replaced.
+_ERROR_SKELETON_WORDS = {
+    "allowed", "array", "content", "expected", "format", "input", "instructions",
+    "invalid", "json", "length", "limit", "long", "message", "missing",
+    "model", "must", "not", "permission", "policy", "required", "role",
+    "safety", "string", "system", "token", "too", "type", "unsupported",
+    "user", "workspace",
+}
+_RESPONSE_FAILURE_STATUSES = {
+    "subscription_sharing_user_not_eligible": 403,
+    "subscription_sharing_usage_limit_exceeded": 429,
+    "subscription_sharing_usage_unavailable": 503,
+    "subscription_sharing_unsupported_capability": 400,
+    "subscription_sharing_route_not_supported": 403,
+    "subscription_sharing_invalid_user": 401,
+    "subscription_sharing_user_unavailable": 503,
+    "chatpass_v2_scope_not_authorized": 403,
+    "chatpass_v2_invalid_authorization_context": 403,
+}
+_SAFE_ERROR_CODES = set(_RESPONSE_FAILURE_STATUSES) | {
+    "invalid_request_error", "rate_limit_exceeded", "server_error",
+    "context_length_exceeded",
+}
+_SAFE_ERROR_PARAMS = {
+    "input", "instructions", "model", "text.format", "tools",
+    "tool_choice", "parallel_tool_calls", "response_format", "store", "stream",
+}
+_SAFE_BODY_KEYS = {"code", "error", "message", "param", "type"}
 _DROPPABLE_FIELDS = {"temperature", "max_tokens", "max_completion_tokens"}
 _ALLOWED_FIELDS = {
     "model", "messages", "stream", "stream_options", "tools", "tool_choice",
@@ -30,6 +65,15 @@ class ProxyRequestError(ValueError):
 
 class ProxyUpstreamError(RuntimeError):
     """The Responses API did not return a completed result."""
+
+    def __init__(self, message: str, *, http_status: int = 502, code: str | None = None, param: str | None = None, request_id: str | None = None, provider_type: str | None = None, category: str | None = None):
+        super().__init__(message)
+        self.http_status = http_status
+        self.code = code
+        self.param = param
+        self.request_id = request_id
+        self.provider_type = provider_type
+        self.category = category
 
 
 class ProxyPlanUsageError(ProxyUpstreamError):
@@ -51,7 +95,107 @@ class ProxyPlanUsageError(ProxyUpstreamError):
             raise ValueError("Unrecognized plan usage error")
         self.code = code
         self.http_status, self.public_message = self._RECOVERY[code]
-        super().__init__(self.public_message)
+        super().__init__(self.public_message, http_status=self.http_status, code=code)
+
+
+class _OneShotErrorMessageDiagnostic:
+    """Process-local permission to emit one redacted provider-error skeleton."""
+
+    def __init__(self, enabled: bool) -> None:
+        self._lock = threading.Lock()
+        self._available = enabled
+
+    def take(self) -> bool:
+        with self._lock:
+            if not self._available:
+                return False
+            self._available = False
+            return True
+
+
+# This deliberately does not survive a restart or appear in the public API.
+_error_message_diagnostic = _OneShotErrorMessageDiagnostic(
+    os.environ.pop("MIROFISH_DIAG_ERROR_ONCE", "") == "1"
+)
+
+
+def _message_skeleton(message: str) -> str:
+    """Keep protocol words in order, never arbitrary words from the input."""
+    pieces: list[str] = []
+    for token in re.findall(r"\w+|[^\w\s]", message, flags=re.UNICODE)[:48]:
+        safe = token.lower() if token.lower() in _ERROR_SKELETON_WORDS else "[redacted]"
+        if safe == "[redacted]" and pieces and pieces[-1] == safe:
+            continue
+        pieces.append(safe)
+    return " ".join(pieces)[:240]
+
+
+def _provider_message(body: Any) -> str | None:
+    if not isinstance(body, dict):
+        return None
+    detail = body.get("error")
+    if isinstance(detail, dict):
+        body = detail
+    message = body.get("message")
+    return message if isinstance(message, str) and message else None
+
+
+def _message_category(message: Any) -> str:
+    """Classify provider prose without writing or returning it."""
+    if not isinstance(message, str):
+        return "other"
+    lower = message.lower()
+    if any(term in lower for term in ("permission", "not eligible", "not allowed", "unauthorized", "access denied", "scope")):
+        return "permission"
+    if any(term in lower for term in ("usage", "quota", "rate limit", "credits", "usage limit")):
+        return "usage"
+    if any(term in lower for term in ("unsupported", "not supported", "does not support")):
+        return "unsupported_capability"
+    if any(term in lower for term in ("invalid input", "input is invalid", "malformed input", "input must", "input should", "input format")):
+        return "invalid_input"
+    return "other"
+
+
+def _error_parts(body: Any) -> tuple[str | None, str | None, str | None, str, str]:
+    """Return machine fields and only the *shape* of an upstream body."""
+    if not isinstance(body, dict):
+        return None, None, None, "other", type(body).__name__ if body is not None else "none"
+    detail = body.get("error")
+    if not isinstance(detail, dict):
+        detail = body
+    top_keys = ",".join(sorted(key for key in body if key in _SAFE_BODY_KEYS))
+    error_keys = ",".join(sorted(key for key in detail if key in _SAFE_BODY_KEYS))
+    shape = f"object[{top_keys}]/error[{error_keys}]"
+    raw_type = detail.get("type")
+    provider_type = raw_type if isinstance(raw_type, str) and raw_type in _SAFE_ERROR_TYPES else None
+    return (
+        detail.get("code") if isinstance(detail.get("code"), str) and detail["code"] in _SAFE_ERROR_CODES else None,
+        detail.get("param") if isinstance(detail.get("param"), str) and detail["param"] in _SAFE_ERROR_PARAMS else None,
+        provider_type,
+        _message_category(detail.get("message")),
+        shape,
+    )
+
+
+def _log_upstream_failure(stage: str, *, error: Exception | None = None, body: Any = None) -> tuple[int, str | None, str | None, str | None, str | None, str]:
+    """Record enough to diagnose admission, transport and parsing safely."""
+    source = getattr(error, "body", None) if error is not None else body
+    code, param, provider_type, category, shape = _error_parts(source)
+    raw_status = getattr(error, "status_code", None)
+    status = raw_status if isinstance(raw_status, int) and 100 <= raw_status <= 599 else _RESPONSE_FAILURE_STATUSES.get(code, 502)
+    # An upstream-controlled request ID is never copied to our logs or API.
+    request_id = None
+    LOGGER.error(
+        "ChatGPT plan request failed: stage=%s class=%s status=%s code=%s param=%s provider_type=%s category=%s request_id=%s body_shape=%s",
+        stage, type(error).__name__ if error is not None else "none", status,
+        code or "none", param or "none", provider_type or "none", category,
+        request_id or "none", shape,
+    )
+    if _error_message_diagnostic.take():
+        message = _provider_message(source)
+        if message is not None:
+            LOGGER.error("ChatGPT plan one-shot error skeleton: %s", _message_skeleton(message))
+    return status, code, param, request_id, provider_type, category
 
 
 def _mapping(value: Any) -> Dict[str, Any]:
@@ -185,6 +329,21 @@ def _convert_messages(messages: Any) -> Tuple[Optional[str], List[Dict[str, Any]
     return "\n\n".join(instructions) if instructions else None, input_items
 
 
+def _ensure_json_instruction_in_input(input_items: List[Dict[str, Any]]) -> None:
+    """JSON mode requires a JSON instruction in Responses ``input`` itself.
+
+    Chat Completions system text is translated to ``instructions`` above, but
+    the Responses API validates its ``input`` separately for JSON mode.
+    """
+    user_messages = [item for item in input_items if item.get("role") == "user"]
+    if any("json" in item["content"].lower() for item in user_messages):
+        return
+    if user_messages:
+        user_messages[-1]["content"] += "\n\nReturn a JSON object."
+    else:
+        input_items.append({"role": "user", "content": "Return a JSON object."})
+
+
 def build_responses_request(payload: Any) -> Tuple[Dict[str, Any], bool, List[str]]:
     """Validate and translate one Chat Completions request.
 
@@ -236,6 +395,7 @@ def build_responses_request(payload: Any) -> Tuple[Dict[str, Any], bool, List[st
     response_format = payload.get("response_format")
     if response_format is not None:
         if response_format == {"type": "json_object"}:
+            _ensure_json_instruction_in_input(input_items)
             kwargs["text"] = {"format": {"type": "json_object"}}
         elif response_format != {"type": "text"}:
             raise ProxyRequestError("Only text and json_object response formats are supported")
@@ -304,8 +464,10 @@ def create_completion(payload: Dict[str, Any], *, stream_factory: Optional[Calla
     """Consume the upstream SSE before returning any downstream result."""
     kwargs, downstream_stream, ignored = build_responses_request(payload)
     factory = stream_factory or _default_stream_factory
+    stage = "request"
     try:
         stream = factory(**kwargs)
+        stage = "stream"
         completed: Optional[Dict[str, Any]] = None
         try:
             for raw_event in stream:
@@ -315,10 +477,16 @@ def create_completion(payload: Dict[str, Any], *, stream_factory: Optional[Calla
                     response = _mapping(event.get("response"))
                     error = _mapping(response.get("error"))
                     code = error.get("code")
+                    status, safe_code, safe_param, _, provider_type, category = _log_upstream_failure("response.failed", body={"error": error})
                     if isinstance(code, str) and code in ProxyPlanUsageError._RECOVERY:
                         raise ProxyPlanUsageError(code)
-                    raise ProxyUpstreamError("Responses API did not complete")
+                    raise ProxyUpstreamError(
+                        "Responses API did not complete", http_status=status,
+                        code=safe_code, param=safe_param,
+                        provider_type=provider_type, category=category,
+                    )
                 if event_type in ("response.incomplete", "error"):
+                    _log_upstream_failure(str(event_type), body=event)
                     raise ProxyUpstreamError("Responses API did not complete")
                 if event_type == "response.completed":
                     completed = _mapping(event.get("response"))
@@ -331,11 +499,22 @@ def create_completion(payload: Dict[str, Any], *, stream_factory: Optional[Calla
     except Exception as exc:
         # Never put an upstream exception in an HTTP response: some SDK errors
         # include headers or request detail that may contain credentials.
-        raise ProxyUpstreamError("Responses API request failed") from exc
+        status, code, param, request_id, provider_type, category = _log_upstream_failure(stage, error=exc)
+        raise ProxyUpstreamError(
+            "Responses API request failed", http_status=status,
+            code=code, param=param, request_id=request_id,
+            provider_type=provider_type, category=category,
+        ) from None
     if completed is None or completed.get("status") not in (None, "completed"):
+        _log_upstream_failure("stream_end", body=completed)
         raise ProxyUpstreamError("Responses API ended without response.completed")
-    text, calls = _response_text_and_calls(completed)
+    try:
+        text, calls = _response_text_and_calls(completed)
+    except ProxyUpstreamError as exc:
+        _log_upstream_failure("decode", error=exc)
+        raise
     if not text and not calls:
+        _log_upstream_failure("decode_empty", body=completed)
         raise ProxyUpstreamError("Responses API returned no assistant output")
     completion: Dict[str, Any] = {
         "id": completed.get("id") or "chatcmpl-local",

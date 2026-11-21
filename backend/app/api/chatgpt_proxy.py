@@ -67,8 +67,21 @@ def chat_completions():
         if exc.http_status == 429:
             error["usage_url"] = "https://chatgpt.com/settings/usage"
         return jsonify({"error": error}), exc.http_status, {"Cache-Control": "no-store"}
-    except ProxyUpstreamError:
-        return jsonify({"error": {"message": "ChatGPT plan response unavailable", "type": "upstream_error"}}), 502
+    except ProxyUpstreamError as exc:
+        # Preserve safe machine fields for recovery; never echo provider text,
+        # headers or request content from an SDK exception.
+        error = {"message": "ChatGPT plan response unavailable", "type": "upstream_error"}
+        if exc.code:
+            error["code"] = exc.code
+        if exc.param:
+            error["param"] = exc.param
+        if exc.request_id:
+            error["request_id"] = exc.request_id
+        if exc.provider_type:
+            error["provider_type"] = exc.provider_type
+        if exc.category:
+            error["category"] = exc.category
+        return jsonify({"error": error}), exc.http_status, {"Cache-Control": "no-store"}
     headers = {"Cache-Control": "no-store"}
     if ignored:
         headers["X-MiroFish-Adapter-Omitted"] = ",".join(ignored)

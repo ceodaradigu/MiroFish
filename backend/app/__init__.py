@@ -10,7 +10,7 @@ import warnings
 # 需要在所有其他导入之前设置
 warnings.filterwarnings("ignore", message=".*resource_tracker.*")
 
-from flask import Flask, abort, request
+from flask import Flask, abort, g, request
 from flask_cors import CORS
 
 from .config import Config
@@ -61,15 +61,32 @@ def create_app(config_class=Config):
                 abort(403)
 
     if Config.CHATGPT_PLAN_MODE:
+        from .services.plan_work_guard import PlanWorkBusyError, plan_work_guard
+
         @app.before_request
         def require_plan_connection_for_work():
             if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE'):
                 return
-            if not request.path.startswith(('/api/graph/', '/api/simulation/', '/api/report/')):
+            is_plan_api_work = request.path.startswith(('/api/graph/', '/api/simulation/', '/api/report/'))
+            is_plan_proxy_work = request.path == '/v1/chat/completions'
+            if not (is_plan_api_work or is_plan_proxy_work):
+                return
+            try:
+                g.plan_work_lease = plan_work_guard.claim()
+            except PlanWorkBusyError as exc:
+                abort(409, str(exc))
+            if is_plan_proxy_work:
                 return
             from .services.chatgpt_plan_auth import auth
             if not (auth.status()['plan_usage_enabled'] and Config.memory_backend_configured() and Config.LLM_MODEL_NAME):
                 abort(503, 'Connect ChatGPT, select a model, and configure graph memory first.')
+
+        @app.teardown_request
+        def release_request_plan_work(_error):
+            lease = getattr(g, 'plan_work_lease', None)
+            if lease is not None:
+                lease.release()
+                del g.plan_work_lease
     
     # 注册模拟进程清理函数（确保服务器关闭时终止所有模拟进程）
     from .services.simulation_runner import SimulationRunner

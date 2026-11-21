@@ -27,6 +27,7 @@ from ..utils.zep import (
 )
 from .zep_graph_memory_updater import ZepGraphMemoryManager
 from .simulation_ipc import SimulationIPCClient, CommandType, IPCResponse
+from .plan_work_guard import PlanWorkLease, plan_work_guard, release_plan_work
 
 logger = get_logger('mirofish.simulation_runner')
 
@@ -376,6 +377,35 @@ class SimulationRunner:
         enable_graph_memory_update: bool = False,  # 是否将活动更新到Zep图谱
         graph_id: str = None  # Zep图谱ID（启用图谱更新时必需）
     ) -> SimulationRunState:
+        """Claim the plan session before startup, through monitor shutdown."""
+
+        plan_lease = plan_work_guard.claim() if Config.CHATGPT_PLAN_MODE else None
+        monitor_started = [False]
+        try:
+            return cls._start_simulation_impl(
+                simulation_id=simulation_id,
+                platform=platform,
+                max_rounds=max_rounds,
+                enable_graph_memory_update=enable_graph_memory_update,
+                graph_id=graph_id,
+                plan_lease=plan_lease,
+                monitor_started=monitor_started,
+            )
+        finally:
+            if not monitor_started[0]:
+                release_plan_work(plan_lease)
+
+    @classmethod
+    def _start_simulation_impl(
+        cls,
+        simulation_id: str,
+        platform: str,
+        max_rounds: int | None,
+        enable_graph_memory_update: bool,
+        graph_id: str | None,
+        plan_lease: PlanWorkLease | None,
+        monitor_started: list[bool],
+    ) -> SimulationRunState:
         """
         启动模拟
         
@@ -551,11 +581,28 @@ class SimulationRunner:
             # Capture locale before spawning monitor thread
             current_locale = get_locale()
 
-            monitor_thread = threading.Thread(
-                target=cls._monitor_simulation,
-                args=(simulation_id, current_locale),
-                daemon=True
-            )
+            def monitor_with_plan_lease():
+                try:
+                    cls._monitor_simulation(simulation_id, current_locale)
+                finally:
+                    # A monitor error can leave the child alive even after its
+                    # state is marked FAILED and removed from _processes. Keep
+                    # this account fixed and terminate that unsupervised child.
+                    try:
+                        if process.poll() is None:
+                            try:
+                                cls._terminate_process(process, simulation_id)
+                            except Exception:
+                                logger.exception("Simulation process termination failed")
+                        process.wait(timeout=10)
+                    except Exception:
+                        logger.exception(
+                            "Cannot confirm simulation process exit; retaining plan session lease"
+                        )
+                    else:
+                        release_plan_work(plan_lease)
+
+            monitor_thread = threading.Thread(target=monitor_with_plan_lease, daemon=True)
 
             # Atomically publish every resource needed by stop/finalization.
             # The monitor is registered before start; if it exits immediately,
@@ -573,6 +620,7 @@ class SimulationRunner:
                     RunnerStatus.RUNNING,
                 )
                 monitor_thread.start()
+                monitor_started[0] = True
             
             logger.info(f"模拟启动成功: {simulation_id}, pid={process.pid}, platform={platform}")
             

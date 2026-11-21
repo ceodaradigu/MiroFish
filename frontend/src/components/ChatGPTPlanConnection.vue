@@ -17,11 +17,20 @@
         target="_blank"
         rel="noopener noreferrer"
         data-oai-siwc-button
-      >{{ status.connected ? copy.reconnect : copy.connect }}</a>
+      >{{ status.registered ? copy.reconnect : copy.connect }}</a>
+      <a
+        v-if="status.registered || status.pendingRegistration"
+        class="register-button"
+        :href="startNewUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+      >{{ status.pendingRegistration ? copy.continuePending : copy.registerAnother }}</a>
       <button type="button" class="refresh-button" :disabled="loadingStatus" @click="refreshStatus">
         {{ copy.refresh }}
       </button>
     </div>
+    <p v-if="status.registered && !status.pendingRegistration" class="consent-note">{{ copy.separateRegistration }}</p>
+    <p v-if="status.pendingRegistration" class="attention" role="status">{{ copy.pendingRegistrationNote }}</p>
 
     <p v-if="status.connected && !status.planUsageEnabled" class="attention" role="status">
       {{ copy.notEligible }}
@@ -64,6 +73,7 @@ const emit = defineEmits(['status-change', 'memory-backend-change'])
 const { locale } = useI18n()
 const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:5001'
 const startUrl = `${apiBase}/api/chatgpt/start`
+const startNewUrl = `${apiBase}/api/chatgpt/start-new`
 
 const messages = {
   es: {
@@ -71,7 +81,12 @@ const messages = {
     description: 'Autoriza esta instalación local de MiroFish para usar tu plan de ChatGPT. La disponibilidad se comprueba al iniciar sesión y depende de tu cuenta y plan.',
     consent: 'Al continuar, aceptarás el acceso en la página oficial de OpenAI. La conexión puede usar los límites de tu plan. No introduzcas credenciales ni claves aquí.',
     connect: 'Continuar con ChatGPT',
-    reconnect: 'Reconectar cuenta',
+    reconnect: 'Reconectar registro actual',
+    registerAnother: 'Registrar otra cuenta o área de trabajo',
+    continuePending: 'Continuar registro de otra cuenta',
+    separateRegistration: 'La inscripción es independiente y conserva el registro actual. OpenAI decide el acceso; tú completas el inicio de sesión y el consentimiento. Si vuelve a denegarlo, detén el intento.',
+    pendingRegistration: 'Registro sin verificar',
+    pendingRegistrationNote: 'La inscripción separada quedó pendiente. Continúala con el mismo identificador; si OpenAI vuelve a denegarla, detén el intento.',
     refresh: 'Comprobar estado',
     checking: 'Comprobando…',
     disconnected: 'Sin conectar',
@@ -98,7 +113,12 @@ const messages = {
     description: 'Authorize this local MiroFish installation to use your ChatGPT plan. Availability is checked during sign-in and depends on your account and plan.',
     consent: 'Continuing opens the official OpenAI authorization page. Usage may count toward your plan limits. Do not enter credentials or keys here.',
     connect: 'Continue with ChatGPT',
-    reconnect: 'Reconnect account',
+    reconnect: 'Reconnect current registration',
+    registerAnother: 'Register another account or workspace',
+    continuePending: 'Continue another account registration',
+    separateRegistration: 'This is a separate registration that keeps the current one. OpenAI decides access; you complete sign-in and consent there. If access is denied again, stop.',
+    pendingRegistration: 'Registration unverified',
+    pendingRegistrationNote: 'The separate registration is pending. Continue it with the same identifier; if OpenAI denies access again, stop.',
     refresh: 'Check status',
     checking: 'Checking…',
     disconnected: 'Not connected',
@@ -125,7 +145,12 @@ const messages = {
     description: '授权本地 MiroFish 使用你的 ChatGPT 套餐。登录时会检查账户和套餐是否支持。',
     consent: '继续后将打开 OpenAI 官方授权页面。使用量可能计入套餐限额。请勿在此输入凭据或密钥。',
     connect: '使用 ChatGPT 继续',
-    reconnect: '重新连接账户',
+    reconnect: '重新连接当前注册',
+    registerAnother: '注册其他账户或工作区',
+    continuePending: '继续注册其他账户',
+    separateRegistration: '这是独立注册，会保留当前注册。是否允许访问由 OpenAI 决定；请在其页面完成登录与授权。如再次被拒绝，请停止尝试。',
+    pendingRegistration: '注册尚未验证',
+    pendingRegistrationNote: '独立注册尚未完成。请使用同一标识继续；如 OpenAI 再次拒绝访问，请停止尝试。',
     refresh: '检查状态',
     checking: '检查中…',
     disconnected: '未连接',
@@ -153,7 +178,7 @@ const copy = computed(() => {
   if (navigator.language?.toLowerCase().startsWith('es')) return messages.es
   return messages[locale.value] || messages.en
 })
-const status = reactive({ connected: false, planUsageEnabled: false, memoryBackend: 'zep', memoryReady: false, zepConfigured: false, selectedModel: '' })
+const status = reactive({ registered: false, identityVerified: false, pendingRegistration: false, connected: false, planUsageEnabled: false, memoryBackend: 'zep', memoryReady: false, zepConfigured: false, selectedModel: '' })
 const planMode = ref(null)
 const models = ref([])
 const pendingModel = ref('')
@@ -167,6 +192,7 @@ const connectionReady = computed(() => planMode.value === false || (
 ))
 const stateLabel = computed(() => {
   if (loadingStatus.value) return copy.value.checking
+  if (status.pendingRegistration && !status.identityVerified) return copy.value.pendingRegistration
   if (!status.connected) return copy.value.disconnected
   return status.planUsageEnabled ? copy.value.connected : copy.value.unavailable
 })
@@ -198,6 +224,9 @@ async function refreshStatus() {
   try {
     const response = await api.get('/api/chatgpt/status')
     planMode.value = response.planMode === false ? false : true
+    status.registered = response.registered === true
+    status.identityVerified = response.identityVerified === true
+    status.pendingRegistration = response.pendingRegistration === true
     status.connected = response.connected === true
     status.planUsageEnabled = response.planUsageEnabled === true
     status.memoryBackend = response.memoryBackend === 'local' ? 'local' : 'zep'
@@ -209,6 +238,9 @@ async function refreshStatus() {
     else models.value = []
   } catch {
     planMode.value = null
+    status.registered = false
+    status.identityVerified = false
+    status.pendingRegistration = false
     status.connected = false
     status.planUsageEnabled = false
     status.memoryBackend = 'zep'
@@ -255,9 +287,10 @@ p { margin: 8px 0; }
 .connection-state.ready { border-color: #277e46; color: #176132; }
 .consent-note, .zep-note { color: #555; }
 .connection-actions, .model-controls { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-.connect-button, button, select { font: inherit; }
-.connect-button, button { padding: 8px 10px; border: 1px solid #222; text-decoration: none; cursor: pointer; }
+.connect-button, .register-button, button, select { font: inherit; }
+.connect-button, .register-button, button { padding: 8px 10px; border: 1px solid #222; text-decoration: none; cursor: pointer; }
 .connect-button { background: #111; color: #fff; }
+.register-button { background: #fff; color: #111; }
 button { background: #fff; color: #111; }
 button:disabled { opacity: .5; cursor: not-allowed; }
 .model-picker { margin-top: 18px; }
