@@ -20,6 +20,21 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app import create_app
 from app.config import Config
+from werkzeug.serving import WSGIRequestHandler
+
+
+class _PrivateOAuthRequestHandler(WSGIRequestHandler):
+    """Avoid printing one-use OAuth code and state in Werkzeug access logs."""
+
+    def log_request(self, code='-', size='-'):
+        if getattr(self, 'path', '').split('?', 1)[0] == '/api/chatgpt/callback':
+            original_path = self.path
+            try:
+                self.path = '/api/chatgpt/callback'
+                return super().log_request(code, size)
+            finally:
+                self.path = original_path
+        return super().log_request(code, size)
 
 
 def main():
@@ -42,7 +57,8 @@ def main():
     debug = Config.DEBUG
     
     # 启动服务
-    app.run(host=host, port=port, debug=debug, threaded=True)
+    run_options = {'request_handler': _PrivateOAuthRequestHandler} if Config.CHATGPT_PLAN_MODE else {}
+    app.run(host=host, port=port, debug=debug, threaded=True, **run_options)
 
 
 if __name__ == '__main__':

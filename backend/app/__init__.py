@@ -3,6 +3,7 @@ MiroFish Backend - Flask应用工厂
 """
 
 import os
+import ipaddress
 import warnings
 
 # 抑制 multiprocessing resource_tracker 的警告（来自第三方库如 transformers）
@@ -44,11 +45,31 @@ def create_app(config_class=Config):
 
     @app.before_request
     def restrict_browser_origin():
-        if request.path.startswith('/api/'):
+        if Config.CHATGPT_PLAN_MODE:
+            try:
+                remote_is_local = ipaddress.ip_address(request.remote_addr or '').is_loopback
+            except ValueError:
+                remote_is_local = False
+            if request.host != '127.0.0.1:5001' or not remote_is_local:
+                abort(403)
+        if request.path.startswith(('/api/', '/v1/')):
             origin = request.headers.get('Origin')
             fetch_site = request.headers.get('Sec-Fetch-Site')
-            if origin not in (None, 'http://127.0.0.1:3000') or fetch_site == 'cross-site':
+            # OpenAI returns to this exact URL in a top-level cross-site navigation.
+            is_oauth_callback = request.method == 'GET' and request.path == '/api/chatgpt/callback'
+            if origin not in (None, 'http://127.0.0.1:3000') or (fetch_site == 'cross-site' and not is_oauth_callback):
                 abort(403)
+
+    if Config.CHATGPT_PLAN_MODE:
+        @app.before_request
+        def require_plan_connection_for_work():
+            if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE'):
+                return
+            if not request.path.startswith(('/api/graph/', '/api/simulation/', '/api/report/')):
+                return
+            from .services.chatgpt_plan_auth import auth
+            if not (auth.status()['plan_usage_enabled'] and Config.zep_is_configured() and Config.LLM_MODEL_NAME):
+                abort(503, 'Connect ChatGPT, select a model, and configure Zep Cloud first.')
     
     # 注册模拟进程清理函数（确保服务器关闭时终止所有模拟进程）
     from .services.simulation_runner import SimulationRunner
@@ -61,7 +82,9 @@ def create_app(config_class=Config):
     def log_request():
         logger = get_logger('mirofish.request')
         logger.debug(f"请求: {request.method} {request.path}")
-        if request.content_type and 'json' in request.content_type:
+        # The plan adapter can receive prompts and tool results. Never write
+        # JSON request bodies to disk in this local mode, even at DEBUG level.
+        if not Config.CHATGPT_PLAN_MODE and request.content_type and 'json' in request.content_type:
             logger.debug(f"请求体: {request.get_json(silent=True)}")
     
     @app.after_request
@@ -75,6 +98,15 @@ def create_app(config_class=Config):
     app.register_blueprint(graph_bp, url_prefix='/api/graph')
     app.register_blueprint(simulation_bp, url_prefix='/api/simulation')
     app.register_blueprint(report_bp, url_prefix='/api/report')
+    if Config.CHATGPT_PLAN_MODE:
+        from .api.chatgpt_plan import chatgpt_plan_bp
+        from .api.chatgpt_proxy import chatgpt_proxy_bp
+        app.register_blueprint(chatgpt_plan_bp, url_prefix='/api/chatgpt')
+        app.register_blueprint(chatgpt_proxy_bp)
+    else:
+        @app.get('/api/chatgpt/status')
+        def chatgpt_plan_disabled_status():
+            return {'planMode': False}
     
     # 健康检查
     @app.route('/health')

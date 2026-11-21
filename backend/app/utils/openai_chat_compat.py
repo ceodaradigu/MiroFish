@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from ..config import Config
+
 
 def is_gpt5_family(model: Optional[str]) -> bool:
     """Return True when model belongs to GPT-5 family aliases/snapshots."""
@@ -42,6 +44,11 @@ def create_chat_completion(
 
     if response_format is not None:
         kwargs["response_format"] = response_format
+
+    if Config.CHATGPT_PLAN_MODE:
+        # ChatGPT plan usage permits Responses requests without sampling or
+        # output-token controls. The localhost adapter translates this call.
+        return client.chat.completions.create(**kwargs)
 
     gpt5_family = is_gpt5_family(model)
 

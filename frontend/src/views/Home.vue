@@ -78,6 +78,8 @@
             </div>
           </div>
 
+          <ChatGPTPlanConnection @status-change="connectionReady = $event" />
+
           <!-- 项目模拟步骤介绍 (新增区域) -->
           <div class="steps-container">
             <div class="steps-header">
@@ -200,6 +202,7 @@
                 <span v-else>{{ $t('home.initializing') }}</span>
                 <span class="btn-arrow">→</span>
               </button>
+              <p v-if="!connectionReady" class="connection-hint">{{ connectionHint }}</p>
             </div>
           </div>
         </div>
@@ -216,8 +219,17 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import HistoryDatabase from '../components/HistoryDatabase.vue'
 import LanguageSwitcher from '../components/LanguageSwitcher.vue'
+import ChatGPTPlanConnection from '../components/ChatGPTPlanConnection.vue'
+import { useI18n } from 'vue-i18n'
 
 const router = useRouter()
+const { locale } = useI18n()
+const connectionReady = ref(false)
+const connectionHint = computed(() => {
+  if (navigator.language?.toLowerCase().startsWith('es')) return 'Conecta una cuenta con acceso al plan, selecciona un modelo y configura Zep Cloud para iniciar la simulación.'
+  if (locale.value === 'zh') return '请连接可用的 ChatGPT 套餐、选择模型并配置 Zep Cloud 后再开始模拟。'
+  return 'Connect an eligible ChatGPT plan, select a model, and configure Zep Cloud before starting a simulation.'
+})
 
 // 表单数据
 const formData = ref({
@@ -237,7 +249,7 @@ const fileInput = ref(null)
 
 // 计算属性:是否可以提交
 const canSubmit = computed(() => {
-  return formData.value.simulationRequirement.trim() !== '' && files.value.length > 0
+  return connectionReady.value && formData.value.simulationRequirement.trim() !== '' && files.value.length > 0
 })
 
 // 触发文件选择
