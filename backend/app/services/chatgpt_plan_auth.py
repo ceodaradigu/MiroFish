@@ -242,9 +242,6 @@ class ChatGPTPlanAuth:
                 if not isinstance(callback_client, str) or not _CLIENT_ID.fullmatch(callback_client) or callback_client == "dynamic_agent_client":
                     raise ChatGPTPlanAuthError("ChatGPT no devolvió un identificador de cliente válido.")
                 client_id = callback_client
-                # Retain registration if the one-time code expires after issuance.
-                self._registration["client_id"] = client_id
-                self._save_registration(self._registration)
             else:
                 client_id = pending["client_id"]
                 if callback_client and callback_client != client_id:
@@ -267,10 +264,16 @@ class ChatGPTPlanAuth:
                 raise ChatGPTPlanAuthError("ChatGPT no devolvió una identidad válida.")
             if self._registration.get("subject") and self._registration["subject"] != subject:
                 raise ChatGPTPlanAuthError("La cuenta de ChatGPT no coincide con la conexión anterior.")
-            self._registration["subject"] = subject
-            self._save_registration(self._registration)
+            # A newly issued client is bound to the account and workspace
+            # selected during registration. Never reuse it after a failed
+            # exchange or ID-token check, when that binding is still unknown.
+            # Inspect the granted scopes before committing the registration.
+            plan_granted = {"chatgpt.tokens.use.direct", "resource.invoke", "offline_access"}.issubset(tokens["scopes"])
+            registration = {**self._registration, "client_id": client_id, "subject": subject}
+            self._save_registration(registration)
+            self._registration = registration
             self._signed_in = True
-            if not {"chatgpt.tokens.use.direct", "resource.invoke", "offline_access"}.issubset(tokens["scopes"]):
+            if not plan_granted:
                 self._tokens = None
                 return self.status()
             self._tokens = {

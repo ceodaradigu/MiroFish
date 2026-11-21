@@ -127,6 +127,33 @@ def test_wrong_state_rejected_before_token_exchange(tmp_path):
         auth.finish({"state": "wrong", "client_id": "oaiapp_test", "code": "synthetic-code"}, REDIRECT_URI)
 
 
+@pytest.mark.parametrize("failure", ["token_exchange", "identity_verification"])
+def test_failed_first_callback_does_not_persist_unverified_client(tmp_path, failure):
+    def handler(_request):
+        if failure == "token_exchange":
+            return httpx.Response(400, json={"error": "invalid_grant"})
+        return httpx.Response(200, json=token_response())
+
+    def verifier(_token, _client_id, _nonce):
+        raise ChatGPTPlanAuthError("Synthetic identity verification failure")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    auth = ChatGPTPlanAuth(tmp_path, http_client=client, verifier=verifier)
+    _, params = authorize(auth)
+
+    with pytest.raises(ChatGPTPlanAuthError):
+        auth.finish(
+            {"state": params["state"], "client_id": "oaiapp_test", "code": "synthetic-code"},
+            REDIRECT_URI,
+        )
+
+    saved = json.loads((tmp_path / REGISTRATION_NAME).read_text(encoding="utf-8"))
+    assert saved == {"host_id": params["ext_agent_host_id"]}
+    assert auth.status() == {"registered": False, "connected": False, "plan_usage_enabled": False}
+    _, next_params = authorize(auth)
+    assert next_params["client_id"] == "dynamic_agent_client"
+
+
 def test_missing_plan_scope_retains_identity_without_plan_access(tmp_path):
     identity_only = token_response(scopes="openid profile email")
     identity_only.pop("refresh_token")
@@ -137,6 +164,8 @@ def test_missing_plan_scope_retains_identity_without_plan_access(tmp_path):
     _, params = authorize(auth)
     result = auth.finish({"state": params["state"], "client_id": "oaiapp_test", "code": "synthetic-code"}, REDIRECT_URI)
     assert result == {"registered": True, "connected": True, "plan_usage_enabled": False}
+    saved = json.loads((tmp_path / REGISTRATION_NAME).read_text(encoding="utf-8"))
+    assert saved == {"host_id": params["ext_agent_host_id"], "client_id": "oaiapp_test", "subject": "synthetic-subject"}
     with pytest.raises(ChatGPTPlanAuthError):
         auth.get_access_token()
 

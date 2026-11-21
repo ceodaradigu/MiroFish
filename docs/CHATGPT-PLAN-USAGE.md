@@ -26,6 +26,11 @@ not configured for a hosted service or for Tallerna's production server.
 4. Select **Continue with ChatGPT**. Finish the sign-in and consent directly
    on OpenAI's page. Return to MiroFish, refresh the status, and select a model
    listed for the account.
+   OpenAI binds an issued client ID to the account and workspace used at
+   registration. If its page says the account cannot access this application,
+   stop there. Resolve access through the owning workspace; MiroFish cannot
+   override that restriction, and repeating the same authorization will not
+   grant access.
 5. The local graph is stored in the ignored `backend/uploads/local_graph.db`.
    `ZEP_API_KEY` is not needed in local mode. The original Zep Cloud route is
    still available by selecting `MEMORY_BACKEND=zep` and configuring its key.
