@@ -60,7 +60,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import api from '../api'
 
-const emit = defineEmits(['status-change'])
+const emit = defineEmits(['status-change', 'memory-backend-change'])
 const { locale } = useI18n()
 const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:5001'
 const startUrl = `${apiBase}/api/chatgpt/start`
@@ -220,6 +220,7 @@ async function refreshStatus() {
     errorMessage.value = copy.value.statusError
   } finally {
     loadingStatus.value = false
+    emit('memory-backend-change', planMode.value === true ? status.memoryBackend : null)
     notifyReadiness()
   }
 }

@@ -78,7 +78,10 @@
             </div>
           </div>
 
-          <ChatGPTPlanConnection @status-change="connectionReady = $event" />
+          <ChatGPTPlanConnection
+            @status-change="connectionReady = $event"
+            @memory-backend-change="memoryBackend = $event"
+          />
 
           <!-- 项目模拟步骤介绍 (新增区域) -->
           <div class="steps-container">
@@ -225,10 +228,22 @@ import { useI18n } from 'vue-i18n'
 const router = useRouter()
 const { locale } = useI18n()
 const connectionReady = ref(false)
+const memoryBackend = ref(null)
 const connectionHint = computed(() => {
-  if (navigator.language?.toLowerCase().startsWith('es')) return 'Conecta una cuenta con acceso al plan, selecciona un modelo y configura Zep Cloud para iniciar la simulación.'
-  if (locale.value === 'zh') return '请连接可用的 ChatGPT 套餐、选择模型并配置 Zep Cloud 后再开始模拟。'
-  return 'Connect an eligible ChatGPT plan, select a model, and configure Zep Cloud before starting a simulation.'
+  const spanish = navigator.language?.toLowerCase().startsWith('es')
+  if (memoryBackend.value === 'local') {
+    if (spanish) return 'Conecta ChatGPT y selecciona un modelo para iniciar la simulación con memoria local.'
+    if (locale.value === 'zh') return '请连接 ChatGPT 并选择模型，然后使用本地记忆开始模拟。'
+    return 'Connect ChatGPT and select a model to start the simulation with local memory.'
+  }
+  if (memoryBackend.value === 'zep') {
+    if (spanish) return 'Conecta una cuenta con acceso al plan, selecciona un modelo y configura Zep Cloud para iniciar la simulación.'
+    if (locale.value === 'zh') return '请连接可用的 ChatGPT 套餐、选择模型并配置 Zep Cloud 后再开始模拟。'
+    return 'Connect an eligible ChatGPT plan, select a model, and configure Zep Cloud before starting a simulation.'
+  }
+  if (spanish) return 'Comprueba la conexión local para continuar.'
+  if (locale.value === 'zh') return '请先检查本地连接。'
+  return 'Check the local connection to continue.'
 })
 
 // 表单数据
