@@ -67,7 +67,7 @@ def create_app(config_class=Config):
         def require_plan_connection_for_work():
             if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE'):
                 return
-            is_plan_api_work = request.path.startswith(('/api/graph/', '/api/simulation/', '/api/report/'))
+            is_plan_api_work = request.path.startswith(('/api/graph/', '/api/simulation/', '/api/report/', '/api/cohort/'))
             is_plan_proxy_work = request.path == '/v1/chat/completions'
             if not (is_plan_api_work or is_plan_proxy_work):
                 return
@@ -115,6 +115,8 @@ def create_app(config_class=Config):
     app.register_blueprint(graph_bp, url_prefix='/api/graph')
     app.register_blueprint(simulation_bp, url_prefix='/api/simulation')
     app.register_blueprint(report_bp, url_prefix='/api/report')
+    from .api.cohort import cohort_bp
+    app.register_blueprint(cohort_bp, url_prefix='/api/cohort')
     if Config.CHATGPT_PLAN_MODE:
         from .api.chatgpt_plan import chatgpt_plan_bp
         from .api.chatgpt_proxy import chatgpt_proxy_bp

@@ -320,7 +320,7 @@ class ProjectManager:
             f.write(text)
     
     @classmethod
-    def get_extracted_text(cls, project_id: str) -> Optional[str]:
+    def get_extracted_text(cls, project_id: str, max_chars: Optional[int] = None) -> Optional[str]:
         """获取提取的文本"""
         text_path = cls._get_project_text_path(project_id)
         
@@ -328,7 +328,7 @@ class ProjectManager:
             return None
         
         with open(text_path, 'r', encoding='utf-8') as f:
-            return f.read()
+            return f.read(max_chars) if max_chars is not None else f.read()
     
     @classmethod
     def get_project_files(cls, project_id: str) -> List[str]:

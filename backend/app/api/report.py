@@ -4,8 +4,10 @@ Report API路由
 """
 
 import os
+import json
 import traceback
 import threading
+from heapq import heappush, heappushpop
 from flask import request, jsonify, send_file
 
 from . import report_bp
@@ -26,6 +28,46 @@ from ..utils.zep_lifecycle import (
 )
 
 logger = get_logger('mirofish.api.report')
+
+
+def _recent_simulated_actions(simulation_id: str, limit: int = 30):
+    """Read a bounded action sample without materializing every log entry."""
+    if limit <= 0:
+        return []
+    base = os.path.realpath(SimulationRunner.RUN_STATE_DIR)
+    sim_dir = os.path.realpath(os.path.join(base, simulation_id))
+    if os.path.commonpath([base, sim_dir]) != base:
+        return []
+
+    platform_files = [
+        (os.path.join(sim_dir, platform, "actions.jsonl"), platform)
+        for platform in ("twitter", "reddit")
+    ]
+    if not any(os.path.isfile(path) for path, _ in platform_files):
+        platform_files = [(os.path.join(sim_dir, "actions.jsonl"), "")]
+
+    newest = []
+    sequence = 0
+    for path, platform in platform_files:
+        if not os.path.isfile(path) or os.path.commonpath([sim_dir, os.path.realpath(path)]) != sim_dir:
+            continue
+        with open(path, "r", encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    action = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(action, dict) or "event_type" in action or "agent_id" not in action:
+                    continue
+                sequence += 1
+                if not action.get("platform"):
+                    action["platform"] = platform
+                entry = (str(action.get("timestamp", "")), sequence, action)
+                if len(newest) < limit:
+                    heappush(newest, entry)
+                elif entry[:2] > newest[0][:2]:
+                    heappushpop(newest, entry)
+    return [entry[2] for entry in sorted(newest, reverse=True)]
 
 
 def _project_backend_conflict_response(project):
@@ -172,6 +214,12 @@ def generate_report():
                 "success": False,
                 "error": t('api.missingSimRequirement')
             }), 400
+        # Graph searches can have no edges even when the uploaded source and
+        # the completed simulator action log exist. Keep both as separate,
+        # labelled evidence for the report instead of treating an empty graph
+        # as proof that the source or simulated dialogue is absent.
+        source_text = ProjectManager.get_extracted_text(project.project_id, max_chars=12001) or ""
+        simulated_actions = _recent_simulated_actions(simulation_id)
         
         # 提前生成 report_id，以便立即返回给前端
         import uuid
@@ -277,7 +325,9 @@ def generate_report():
                     agent = ReportAgent(
                         graph_id=graph_id,
                         simulation_id=simulation_id,
-                        simulation_requirement=simulation_requirement
+                        simulation_requirement=simulation_requirement,
+                        source_text=source_text,
+                        simulated_actions=simulated_actions,
                     )
 
                     def progress_callback(stage, progress, message):
