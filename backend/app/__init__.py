@@ -9,7 +9,7 @@ import warnings
 # 需要在所有其他导入之前设置
 warnings.filterwarnings("ignore", message=".*resource_tracker.*")
 
-from flask import Flask, request
+from flask import Flask, abort, request
 from flask_cors import CORS
 
 from .config import Config
@@ -40,7 +40,15 @@ def create_app(config_class=Config):
         logger.info("=" * 50)
     
     # 启用CORS
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    CORS(app, resources={r"/api/*": {"origins": "http://127.0.0.1:3000"}})
+
+    @app.before_request
+    def restrict_browser_origin():
+        if request.path.startswith('/api/'):
+            origin = request.headers.get('Origin')
+            fetch_site = request.headers.get('Sec-Fetch-Site')
+            if origin not in (None, 'http://127.0.0.1:3000') or fetch_site == 'cross-site':
+                abort(403)
     
     # 注册模拟进程清理函数（确保服务器关闭时终止所有模拟进程）
     from .services.simulation_runner import SimulationRunner
